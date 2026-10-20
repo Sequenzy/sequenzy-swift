@@ -1,0 +1,64 @@
+# XcodeGen spec for the tiny example app: `brew install xcodegen && xcodegen`
+# then open SequenzyExample.xcodeproj. CI builds it for the simulator.
+name: SequenzyExample
+options:
+  bundleIdPrefix: com.sequenzy
+  deploymentTarget:
+    iOS: "15.0"
+packages:
+  Sequenzy:
+    path: ..
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGNING_ALLOWED: "NO"
+targets:
+  SequenzyExample:
+    type: application
+    platform: iOS
+    sources: [SequenzyExample]
+    dependencies:
+      - package: Sequenzy
+        product: Sequenzy
+      - target: NotificationService
+    info:
+      path: SequenzyExample/Info.plist
+      properties:
+        CFBundleDisplayName: Sequenzy example
+        UILaunchScreen: {}
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [sequenzyexample]
+        SequenzyPublicKey: $(SEQUENZY_PUBLIC_KEY)
+        SequenzyCompanyId: $(SEQUENZY_COMPANY_ID)
+        SequenzyApiBaseUrl: $(SEQUENZY_API_BASE_URL)
+        SequenzyIdentityTokenUrl: $(SEQUENZY_IDENTITY_TOKEN_URL)
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sequenzy.example
+        SEQUENZY_PUBLIC_KEY: seq_pk_replace_me
+        SEQUENZY_COMPANY_ID: replace-me
+        SEQUENZY_API_BASE_URL: https://api.sequenzy.com
+        SEQUENZY_IDENTITY_TOKEN_URL: http://localhost:8787/identity-token
+    entitlements:
+      path: SequenzyExample/SequenzyExample.entitlements
+      properties:
+        aps-environment: development
+  NotificationService:
+    type: app-extension
+    platform: iOS
+    sources: [NotificationService]
+    dependencies:
+      - package: Sequenzy
+        product: SequenzyNotificationService
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: NotificationService
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sequenzy.example.NotificationService
