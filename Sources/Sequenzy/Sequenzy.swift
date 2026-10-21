@@ -41,7 +41,7 @@
         /// identify, reset, track, push registration and feed refreshes run
         /// one at a time in call order: `track(x); reset()` records x for the
         /// signed-in user, and `reset(); identify(b)` leaves b signed in.
-        private static func enqueue(_ command: @escaping Command) {
+        static func enqueue(_ command: @escaping Command) {
             commands?.yield(command)
         }
 
@@ -108,6 +108,11 @@
         public static func reset() {
             guard let client = requireClient() else { return }
             enqueue {
+                #if canImport(ActivityKit)
+                    // The previous user's activities leave the Lock Screen
+                    // with them; reset then reports their tokens ended.
+                    await endLiveActivitiesForReset()
+                #endif
                 await client.reset()
                 // After the reset, so no fetch queued before it can bring the
                 // previous user's messages back.
@@ -273,7 +278,7 @@
             UIApplication.shared.open(url)
         }
 
-        private static func requireClient() -> SequenzyClient? {
+        static func requireClient() -> SequenzyClient? {
             if client == nil {
                 print("[Sequenzy] Call Sequenzy.configure(publicKey:companyId:) first")
             }

@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "Sequenzy", targets: ["Sequenzy"]),
         .library(name: "SequenzyNotificationService", targets: ["SequenzyNotificationService"]),
+        .library(name: "SequenzyLiveActivities", targets: ["SequenzyLiveActivities"]),
     ],
     targets: [
         // Wire protocol, identity, event queue and payload parsing. Foundation
@@ -16,12 +17,15 @@ let package = Package(
         // and the in-app message presenter.
         .target(
             name: "Sequenzy",
-            dependencies: ["SequenzyCore"],
+            dependencies: ["SequenzyCore", "SequenzyLiveActivities"],
             resources: [.copy("PrivacyInfo.xcprivacy")]
         ),
         // Drop-in UNNotificationServiceExtension for rich images and
         // delivery reports. Kept separate so the extension stays small.
         .target(name: "SequenzyNotificationService", dependencies: ["SequenzyCore"]),
+        // The ActivityAttributes protocol and data, with no UIKit, so the
+        // Live Activity widget extension can link it.
+        .target(name: "SequenzyLiveActivities"),
         .testTarget(name: "SequenzyCoreTests", dependencies: ["SequenzyCore"]),
     ]
 )

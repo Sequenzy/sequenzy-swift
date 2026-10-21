@@ -111,6 +111,7 @@ public actor SequenzyClient {
         static let pushToken = "pushToken"
         static let pushRegistration = "pushRegistration"
         static let profile = "profile"
+        static let liveActivityTokens = "liveActivityTokens"
     }
 
     private struct PushRegistration: Codable {
@@ -228,6 +229,15 @@ public actor SequenzyClient {
         identityBlocked = false
         providerRetryAt = nil
         await registerPushIfNeeded(force: previous != normalized)
+        if previous != normalized {
+            if previous != nil {
+                // Another user signed in without reset: the previous user's
+                // running activities stay theirs, and only the device's
+                // push-to-start tokens move to the new contact.
+                saveLiveActivityTokens(liveActivityTokens.filter { $0.kind == .pushToStart })
+            }
+            for token in liveActivityTokens { await sendLiveActivityToken(token) }
+        }
         await flush()
     }
 
@@ -238,6 +248,10 @@ public actor SequenzyClient {
         // an identify() that runs while the remove request is in flight must
         // find the reset already done, not have its new state wiped after.
         let token = store.string(forKey: Key.pushToken)
+        let liveTokens = liveActivityTokens
+        // A running activity belongs to the previous user; push-to-start
+        // tokens belong to the device and are registered again anonymously.
+        saveLiveActivityTokens(liveTokens.filter { $0.kind == .pushToStart })
         store.set(nil, forKey: Key.email)
         store.set(nil, forKey: Key.identityToken)
         store.set(nil, forKey: Key.pushRegistration)
@@ -252,25 +266,34 @@ public actor SequenzyClient {
         identityBlocked = false
         providerRetryAt = nil
 
-        guard let token else { return }
-        let body: JSONValue = [
-            "companyId": .string(configuration.companyId),
-            "publicKey": .string(configuration.publicKey),
-            "platform": .string(configuration.platform),
-            "token": .string(token),
-        ]
-        do {
-            let response = try await post(path: "/api/v1/push/app-devices/remove", body: body)
-            if !(200..<300).contains(response.status) {
-                log(.error, "Could not unregister the push token (HTTP \(response.status))")
+        if let token {
+            let body: JSONValue = [
+                "companyId": .string(configuration.companyId),
+                "publicKey": .string(configuration.publicKey),
+                "platform": .string(configuration.platform),
+                "token": .string(token),
+            ]
+            do {
+                let response = try await post(path: "/api/v1/push/app-devices/remove", body: body)
+                if !(200..<300).contains(response.status) {
+                    log(.error, "Could not unregister the push token (HTTP \(response.status))")
+                }
+            } catch {
+                log(.error, "Could not unregister the push token: \(error)")
             }
-        } catch {
-            log(.error, "Could not unregister the push token: \(error)")
         }
-        // Someone signed in while the remove was in flight; their registration
-        // may have reached the server first, so register the device again.
-        if email != nil {
+        for liveToken in liveTokens {
+            await removeLiveActivityToken(liveToken.token, unlinkSubscriber: true)
+        }
+        // Someone signed in while the removes were in flight; their
+        // registration may have reached the server first, so register again.
+        if email != nil, token != nil {
             await registerPushIfNeeded(force: true)
+        }
+        // Unlinked push-to-start tokens come back for the new anonymous id
+        // (or for whoever signed in meanwhile).
+        for liveToken in liveActivityTokens {
+            await sendLiveActivityToken(liveToken)
         }
     }
 
@@ -691,6 +714,117 @@ public actor SequenzyClient {
             }
         } catch {
             log(.error, "Push \(type.rawValue) report failed: \(error)")
+        }
+    }
+
+    // MARK: - Live Activities
+
+    /// Stored ActivityKit tokens; at most this many are kept, newest last.
+    public static let maxLiveActivityTokens = 32
+    static let liveActivitiesPath = "/api/v1/push/live-activities"
+
+    /// Tokens reported so far. They are sent again on `identify` so they
+    /// link to the contact, and unlinked on `reset`.
+    public var liveActivityTokens: [LiveActivityToken] {
+        guard let raw = store.string(forKey: Key.liveActivityTokens), let data = raw.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([LiveActivityToken].self, from: data)) ?? []
+    }
+
+    private func saveLiveActivityTokens(_ tokens: [LiveActivityToken]) {
+        let kept = Array(tokens.suffix(Self.maxLiveActivityTokens))
+        guard !kept.isEmpty, let data = try? JSONEncoder().encode(kept) else {
+            store.set(nil, forKey: Key.liveActivityTokens)
+            return
+        }
+        store.set(String(data: data, encoding: .utf8), forKey: Key.liveActivityTokens)
+    }
+
+    /// Registers a push-to-start or update token. A newer token for the same
+    /// activity type (push-to-start) or activity (update) replaces the
+    /// stored one, so iOS token rotation never leaves a stale copy behind.
+    public func registerLiveActivityToken(_ token: LiveActivityToken) async {
+        guard token.isValid else {
+            log(.error, "Ignoring a Live Activity token for \(token.activityType): it needs a hex token, the Swift type name and, for update tokens, attributes.sequenzy.activityId")
+            return
+        }
+        var tokens = liveActivityTokens.filter { !token.replaces($0) && $0.token != token.token }
+        tokens.append(token)
+        saveLiveActivityTokens(tokens)
+        await sendLiveActivityToken(token)
+    }
+
+    /// Reports that an activity ended or was dismissed, so Sequenzy stops
+    /// sending to its token.
+    public func liveActivityEnded(token rawToken: String) async {
+        let token = rawToken.lowercased()
+        let tokens = liveActivityTokens
+        guard tokens.contains(where: { $0.token == token }) else { return }
+        saveLiveActivityTokens(tokens.filter { $0.token != token })
+        await removeLiveActivityToken(token, unlinkSubscriber: false)
+    }
+
+    private func sendLiveActivityToken(_ token: LiveActivityToken) async {
+        var base: [String: JSONValue] = [
+            "companyId": .string(configuration.companyId),
+            "publicKey": .string(configuration.publicKey),
+            "kind": .string(token.kind.rawValue),
+            "activityType": .string(token.activityType),
+            "token": .string(token.token),
+            "anonymousId": .string(anonymousId),
+        ]
+        if let activityId = token.activityId { base["activityId"] = .string(activityId) }
+        // Links the token to this installation's push device, when there is one.
+        if let deviceToken = store.string(forKey: Key.pushToken) { base["deviceToken"] = .string(deviceToken) }
+        for (key, value) in [("appVersion", device.appVersion), ("osVersion", device.osVersion)] {
+            if let value, !value.isEmpty { base[key] = .string(value) }
+        }
+
+        let anonymousBody = base
+        let response: SequenzyHTTPResponse?
+        if email != nil {
+            let result = await withIdentity { email, identityToken in
+                var body = anonymousBody
+                body["email"] = .string(email)
+                body["identityToken"] = .string(identityToken)
+                return try await self.post(path: Self.liveActivitiesPath, body: .object(body))
+            }
+            switch result {
+            case .response(let identified):
+                response = identified
+            case .userChanged:
+                // The new user's identify sends the stored tokens again.
+                return
+            case .notIdentified, .identityRejected:
+                // Store it anonymously; Sequenzy can address it once the next
+                // identify links it to the contact.
+                response = await postIgnoringErrors(Self.liveActivitiesPath, .object(anonymousBody))
+            case .failed(let error):
+                log(.info, "Live Activity token registration failed: \(error)")
+                return
+            }
+        } else {
+            response = await postIgnoringErrors(Self.liveActivitiesPath, .object(anonymousBody))
+        }
+        guard let response else { return }
+        if !(200..<300).contains(response.status) {
+            log(.error, "Live Activity token registration failed: HTTP \(response.status) \(errorMessage(response.body) ?? "")")
+        } else if let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+            object["pushConfigured"] as? Bool == false
+        {
+            log(.info, "Live Activity token registered, but APNs credentials are not set up in Sequenzy yet")
+        }
+    }
+
+    private func removeLiveActivityToken(_ token: String, unlinkSubscriber: Bool) async {
+        var body: [String: JSONValue] = [
+            "companyId": .string(configuration.companyId),
+            "publicKey": .string(configuration.publicKey),
+            "token": .string(token),
+        ]
+        if unlinkSubscriber { body["unlinkSubscriber"] = .bool(true) }
+        guard let response = await postIgnoringErrors("\(Self.liveActivitiesPath)/remove", .object(body)) else { return }
+        if !(200..<300).contains(response.status) {
+            log(.error, "Could not report the Live Activity ended (HTTP \(response.status))")
         }
     }
 

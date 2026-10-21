@@ -48,13 +48,52 @@ import SequenzyNotificationService
 class NotificationService: SequenzyNotificationServiceExtension {}
 ```
 
+## Live Activities
+
+Your backend starts (iOS 17.2+), updates and ends Live Activities through the
+Sequenzy API, CLI or MCP. Link `SequenzyLiveActivities` to both the app and the
+widget extension (it has no UIKit, so extensions can use it), adopt
+`SequenzyLiveActivityAttributes` and observe each type right after `configure`.
+The SDK reports push-to-start and update tokens, links them on `identify`,
+reports activities that end, and on `reset()` ends the running activities so
+the next person never sees them.
+
+```swift
+// DeliveryAttributes.swift, in both the app and the widget extension
+import ActivityKit
+import SequenzyLiveActivities
+
+@available(iOS 16.1, *)
+struct DeliveryAttributes: SequenzyLiveActivityAttributes {
+    struct ContentState: Codable, Hashable { var status: String; var minutesAway: Int }
+    var orderNumber: String
+    var sequenzy: SequenzyLiveActivityData   // the id your backend uses
+}
+```
+
+```swift
+// AppDelegate.swift, right after Sequenzy.configure(...)
+import Sequenzy
+
+if #available(iOS 16.1, *) {
+    Sequenzy.observeLiveActivities(of: DeliveryAttributes.self)
+}
+```
+
+Activities the app starts itself need `pushType: .token` and
+`sequenzy: SequenzyLiveActivityData(activityId: "order-1234")`. The
+[Live Activities guide](https://docs.sequenzy.com/concepts/push-notifications#live-activities)
+walks through the Xcode setup (widget extension, Info.plist, target
+membership) and a first test on your iPhone.
+
 ## Layout
 
 | Target                        | Contents                                                        |
 | ----------------------------- | --------------------------------------------------------------- |
 | `SequenzyCore`                | Protocol client, identity, event queue, payload parsing. Foundation only; builds on Linux. |
-| `Sequenzy`                    | UIKit facade, APNs, notification taps, in-app presenter, privacy manifest |
+| `Sequenzy`                    | UIKit facade, APNs, notification taps, Live Activity tokens, in-app presenter, privacy manifest |
 | `SequenzyNotificationService` | Notification Service Extension base class                       |
+| `SequenzyLiveActivities`      | `SequenzyLiveActivityAttributes` for your ActivityAttributes; extension-safe |
 
 ## Develop
 
