@@ -49,6 +49,15 @@
 
         /// How often the feed is fetched while the app is in the foreground.
         public static var feedRefreshInterval: TimeInterval = 60
+        /// Show custom HTML in-app messages (surveys, Braze-style custom
+        /// HTML) in a sandboxed web view. Set false before `configure` to
+        /// leave them in the feed for another app or SDK version.
+        public static var showsHtmlMessages = true
+
+        /// Message formats automatic display draws.
+        static var displayedFormats: [InAppMessage.Format] {
+            showsHtmlMessages ? [.modal, .banner, .fullscreen, .html] : [.modal, .banner, .fullscreen]
+        }
 
         public static var isConfigured: Bool { client != nil }
 
@@ -101,6 +110,8 @@
             guard let client = requireClient() else { return }
             enqueue {
                 await client.identify(email: email, identityToken: identityToken)
+                let signedIn = await client.email
+                presenter?.signedIn(as: signedIn)
                 await refreshMessages(force: true)
             }
         }
@@ -236,14 +247,19 @@
             // to a fetch that ran a moment after it was scheduled.
             if !force, let lastFeedFetch, Date().timeIntervalSince(lastFeedFetch) < feedRefreshInterval * 0.9 { return }
             lastFeedFetch = Date()
-            guard let messages = try? await client.fetchFeed(kind: .message) else { return }
-            presenter?.enqueue(messages)
+            let owner = await client.email
+            guard let messages = try? await client.fetchFeed(kind: .message, formats: displayedFormats),
+                await client.email == owner
+            else { return }
+            presenter?.enqueue(messages, owner: owner)
         }
 
         /// Open in-app messages, for apps that present them themselves.
-        public static func fetchMessages() async throws -> [InAppMessage] {
+        /// Custom HTML messages are included only with `includeHtml`.
+        public static func fetchMessages(includeHtml: Bool = false) async throws -> [InAppMessage] {
             guard let client = requireClient() else { throw SequenzyError.notIdentified }
-            return try await client.fetchFeed(kind: .message)
+            return try await client.fetchFeed(
+                kind: .message, formats: includeHtml ? [.modal, .banner, .fullscreen, .html] : nil)
         }
 
         /// Content cards for an inbox or feed screen, pinned cards first.
@@ -268,9 +284,9 @@
 
         // MARK: Internals
 
-        static func reportFromPresenter(_ type: InAppEventType, messageId: String) {
+        static func reportFromPresenter(_ type: InAppEventType, messageId: String, buttonId: String? = nil) {
             guard let client else { return }
-            Task { await client.report(type, messageId: messageId) }
+            Task { await client.report(type, messageId: messageId, buttonId: buttonId) }
         }
 
         static func open(_ url: URL, from message: InAppMessage?) {

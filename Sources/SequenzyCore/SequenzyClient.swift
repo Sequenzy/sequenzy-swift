@@ -1,6 +1,6 @@
 import Foundation
 
-public let sequenzySDKVersion = "0.1.0"
+public let sequenzySDKVersion = "0.1.1"
 
 public struct SequenzyConfiguration: Sendable {
     public static let defaultAPIBaseURL = URL(string: "https://api.sequenzy.com")!
@@ -831,7 +831,11 @@ public actor SequenzyClient {
     // MARK: - In-app
 
     /// Open messages or cards for the identified contact, in server order.
-    public func fetchFeed(kind: InAppMessage.Kind? = nil, limit: Int? = nil) async throws -> [InAppMessage] {
+    /// `formats` lists the message formats the caller renders; nil means the
+    /// native formats, so `html` messages arrive only when listed.
+    public func fetchFeed(
+        kind: InAppMessage.Kind? = nil, limit: Int? = nil, formats: [InAppMessage.Format]? = nil
+    ) async throws -> [InAppMessage] {
         let result = await withIdentity { email, token in
             var body: [String: JSONValue] = [
                 "companyId": .string(self.configuration.companyId),
@@ -841,6 +845,7 @@ public actor SequenzyClient {
             ]
             if let kind { body["kind"] = .string(kind.rawValue) }
             if let limit { body["limit"] = .number(Double(limit)) }
+            if let formats { body["formats"] = .array(formats.map { .string($0.rawValue) }) }
             return try await self.post(path: "/api/v1/in-app/feed", body: .object(body))
         }
         switch result {
@@ -857,10 +862,11 @@ public actor SequenzyClient {
     }
 
     /// Reports `displayed`, `clicked`, `dismissed` or `read` for a feed item.
+    /// `buttonId` names the control clicked in a custom HTML message.
     @discardableResult
-    public func report(_ type: InAppEventType, messageId: String) async -> Bool {
+    public func report(_ type: InAppEventType, messageId: String, buttonId: String? = nil) async -> Bool {
         let result = await withIdentity { email, token in
-            let body: JSONValue = [
+            var body: [String: JSONValue] = [
                 "companyId": .string(self.configuration.companyId),
                 "publicKey": .string(self.configuration.publicKey),
                 "email": .string(email),
@@ -868,7 +874,10 @@ public actor SequenzyClient {
                 "messageId": .string(messageId),
                 "type": .string(type.rawValue),
             ]
-            return try await self.post(path: "/api/v1/in-app/feed/events", body: body)
+            if let buttonId, type == .clicked, InAppHtmlBridgeMessage.isValidButtonId(buttonId) {
+                body["buttonId"] = .string(buttonId)
+            }
+            return try await self.post(path: "/api/v1/in-app/feed/events", body: .object(body))
         }
         if case .response(let response) = result, (200..<300).contains(response.status) {
             return true

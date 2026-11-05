@@ -48,6 +48,16 @@ import SequenzyNotificationService
 class NotificationService: SequenzyNotificationServiceExtension {}
 ```
 
+## Custom HTML messages
+
+[Custom HTML in-app messages](https://docs.sequenzy.com/concepts/in-app-html-messages) (surveys, Braze-style custom HTML) show
+automatically in a `WKWebView` with a private, non-persistent data store. Their
+JavaScript bridge closes the message, opens links through
+`SequenzyInAppDelegate`, and logs events and attributes for the identified
+contact. Set `Sequenzy.showsHtmlMessages = false` before `configure` to leave
+them in the feed, or use `fetchMessages(includeHtml: true)` to present them
+yourself.
+
 ## Live Activities
 
 Your backend starts (iOS 17.2+), updates and ends Live Activities through the

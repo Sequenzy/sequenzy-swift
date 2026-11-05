@@ -186,7 +186,8 @@
             super.viewDidLoad()
             view.backgroundColor = .clear
             switch message.resolvedFormat {
-            case .modal: buildModal()
+            // Custom HTML is shown by InAppHtmlViewController, never here.
+            case .modal, .html: buildModal()
             case .fullscreen: buildFullscreen()
             case .banner: buildBanner()
             }
@@ -403,7 +404,7 @@
             panel.transform = .identity
             view.transform = .identity
             switch message.resolvedFormat {
-            case .modal: buildModal()
+            case .modal, .html: buildModal()
             case .fullscreen: buildFullscreen()
             case .banner: return
             }

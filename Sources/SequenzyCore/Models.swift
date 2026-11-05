@@ -4,7 +4,9 @@ import Foundation
 /// content card (listed inside it). Mirrors `InAppMessageView` on the server.
 public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
     public enum Kind: String, Codable, Sendable { case message, card }
-    public enum Format: String, Codable, Sendable { case modal, banner, fullscreen }
+    /// `html`: a custom HTML message, rendered in a sandboxed web view with
+    /// the Sequenzy JS bridge (see `InAppHtmlBridgeMessage`).
+    public enum Format: String, Codable, Sendable { case modal, banner, fullscreen, html }
     /// Banners: top or bottom. Modals: bottom (a sheet) or center.
     public enum Position: String, Codable, Sendable { case top, bottom, center }
     public enum ImagePlacement: String, Codable, Sendable { case top, background }
@@ -29,6 +31,10 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
     public let displayedAt: String?
     public let readAt: String?
     public let dismissedAt: String?
+    /// `html` messages: the document to load, with the bridge already in it.
+    public let html: String?
+    /// `html` messages: draw a close button over the document.
+    public let showCloseButton: Bool
 
     /// Messages default to a modal; banners and modals default to the bottom.
     public var resolvedFormat: Format { format ?? .modal }
@@ -39,7 +45,8 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
         id: String, kind: Kind, format: Format?, position: Position?, eyebrow: String = "", title: String,
         body: String, imageUrl: String?, imagePlacement: ImagePlacement? = nil, buttons: [InAppButton],
         data: [String: String], style: InAppStyle, pinned: Bool, createdAt: String, expiresAt: String?,
-        displayedAt: String?, readAt: String?, dismissedAt: String?
+        displayedAt: String?, readAt: String?, dismissedAt: String?, html: String? = nil,
+        showCloseButton: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -59,11 +66,13 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
         self.displayedAt = displayedAt
         self.readAt = readAt
         self.dismissedAt = dismissedAt
+        self.html = html
+        self.showCloseButton = showCloseButton
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, kind, format, position, eyebrow, title, body, imageUrl, imagePlacement, buttons, data, style
-        case pinned, createdAt, expiresAt, displayedAt, readAt, dismissedAt
+        case pinned, createdAt, expiresAt, displayedAt, readAt, dismissedAt, html, showCloseButton
     }
 
     /// Unknown enum values from a newer server decode as nil instead of
@@ -91,6 +100,8 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
         displayedAt = try? container.decodeIfPresent(String.self, forKey: .displayedAt)
         readAt = try? container.decodeIfPresent(String.self, forKey: .readAt)
         dismissedAt = try? container.decodeIfPresent(String.self, forKey: .dismissedAt)
+        html = try? container.decodeIfPresent(String.self, forKey: .html)
+        showCloseButton = (try? container.decodeIfPresent(Bool.self, forKey: .showCloseButton)) ?? false
     }
 }
 
