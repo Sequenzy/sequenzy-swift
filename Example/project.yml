@@ -4,7 +4,7 @@ name: SequenzyExample
 options:
   bundleIdPrefix: com.sequenzy
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "16.0" # NavigationStack; the SDK itself supports iOS 15
 packages:
   Sequenzy:
     path: ..

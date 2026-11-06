@@ -82,11 +82,12 @@
             let configuration = SequenzyConfiguration(
                 publicKey: publicKey, companyId: companyId, appId: appId ?? "",
                 apiBaseURL: apiBaseURL)
-            client = SequenzyClient(
+            let newClient = SequenzyClient(
                 configuration: configuration,
                 device: currentDeviceInfo(),
                 identityTokenProvider: identityTokenProvider,
                 logLevel: logLevel)
+            client = newClient
             showsInAppMessagesAutomatically = showInAppMessages
             presenter = InAppPresenter()
             let (stream, continuation) = AsyncStream<Command>.makeStream()
@@ -94,6 +95,9 @@
             Task { @MainActor in
                 for await command in stream { await command() }
             }
+            // First in the queue, so the first registration and feed fetch
+            // already report permission and ask for push primers.
+            enqueue { await newClient.setPushPermissionReader { await currentPushPermission() } }
             // Keep the app's own delegate, if it set one first, for
             // notifications from other senders.
             let center = UNUserNotificationCenter.current()
@@ -193,16 +197,64 @@
 
         // MARK: Push
 
-        /// Asks for notification permission and registers with APNs.
+        /// Asks for notification permission and registers with APNs. With
+        /// `provisional`, iOS skips the prompt and delivers quietly to
+        /// Notification Center until the user chooses to keep or turn off
+        /// notifications.
         @discardableResult
         public static func requestPushAuthorization(
-            options: UNAuthorizationOptions = [.alert, .badge, .sound]
+            options: UNAuthorizationOptions = [.alert, .badge, .sound],
+            provisional: Bool = false
         ) async -> Bool {
-            let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: options)) ?? false
+            let requested = provisional ? options.union(.provisional) : options
+            let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: requested)) ?? false
             if granted {
                 UIApplication.shared.registerForRemoteNotifications()
             }
+            if let client { enqueue { await client.registerPushIfNeeded() } }
             return granted
+        }
+
+        /// The notification permission as iOS reports it now.
+        nonisolated public static func currentPushPermission() async -> PushPermissionStatus {
+            switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+            case .authorized: return .granted
+            case .provisional: return .provisional
+            case .ephemeral: return .ephemeral
+            case .denied: return .denied
+            case .notDetermined: return .notDetermined
+            @unknown default: return .notDetermined
+            }
+        }
+
+        /// Asks for notification permission the way a push primer does: the
+        /// system prompt when iOS still shows one (including upgrading
+        /// provisional to full permission), otherwise the app's notification
+        /// settings. Returns the permission afterwards.
+        @discardableResult
+        public static func requestPushPermission() async -> PushPermissionStatus {
+            let before = await currentPushPermission()
+            if before == .granted || before == .ephemeral {
+                UIApplication.shared.registerForRemoteNotifications()
+                return before
+            }
+            if before == .denied {
+                // iOS never shows the prompt again; only Settings can turn it on.
+                openNotificationSettings()
+                return before
+            }
+            await requestPushAuthorization()
+            return await currentPushPermission()
+        }
+
+        static func openNotificationSettings() {
+            let raw: String
+            if #available(iOS 16.0, *) {
+                raw = UIApplication.openNotificationSettingsURLString
+            } else {
+                raw = UIApplication.openSettingsURLString
+            }
+            if let url = URL(string: raw) { UIApplication.shared.open(url) }
         }
 
         /// Forward from `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)`.
@@ -274,12 +326,51 @@
             Task { await client.report(type, messageId: message.id) }
         }
 
-        /// Reports the click and opens the button's URL.
+        /// Reports the click and performs the button's action: opens its URL,
+        /// or asks for push permission and reports the result with the click.
         public static func handleButtonTap(_ button: InAppButton, in message: InAppMessage) {
+            if button.action == .requestPushPermission {
+                requestPermissionAndReport(messageId: message.id)
+                return
+            }
             report(.clicked, for: message)
             if button.action == .openUrl, let raw = button.url, let url = URL(string: raw) {
                 open(url, from: message)
             }
+        }
+
+        static func requestPermissionAndReport(messageId: String) {
+            guard let client = requireClient() else { return }
+            Task { @MainActor in
+                let status = await requestPushPermission()
+                await client.report(.clicked, messageId: messageId, pushPermission: status)
+            }
+        }
+
+        // MARK: Geofences
+
+        /// The identified contact's email, or nil. Geofencing runs only then.
+        public static func identifiedEmail() async -> String? {
+            await client?.email
+        }
+
+        /// The nearest geofences around a position. `SequenzyGeofences` calls
+        /// this; apps with their own location stack can too. The position is
+        /// rounded to about 1 km before it is sent.
+        public static func fetchNearbyGeofences(latitude: Double, longitude: Double, limit: Int) async throws -> NearbyGeofences {
+            guard let client = requireClient() else { throw SequenzyError.notIdentified }
+            return try await client.fetchNearbyGeofences(latitude: latitude, longitude: longitude, limit: limit)
+        }
+
+        /// Reports a geofence enter or exit and waits until it is sent or
+        /// queued, so a background task can end afterwards. For apps with
+        /// their own region monitoring; `SequenzyGeofences` calls it too.
+        @discardableResult
+        public static func trackGeofenceTransition(
+            geofenceId: String, transition: GeofenceTransition, at date: Date? = nil
+        ) async -> Bool {
+            guard let client = requireClient() else { return false }
+            return await client.trackGeofenceTransition(geofenceId: geofenceId, transition: transition, at: date)
         }
 
         // MARK: Internals
@@ -309,6 +400,15 @@
                         Sequenzy.startPolling()
                         guard let client = Sequenzy.client else { return }
                         Sequenzy.enqueue {
+                            // Someone who declined and later turned notifications
+                            // on in Settings has no APNs token yet; iOS only
+                            // hands one out once the app registers.
+                            switch await currentPushPermission() {
+                            case .granted, .provisional, .ephemeral:
+                                UIApplication.shared.registerForRemoteNotifications()
+                            case .denied, .notDetermined:
+                                break
+                            }
                             await client.flush()
                             await client.registerPushIfNeeded()
                             await Sequenzy.refreshMessages()

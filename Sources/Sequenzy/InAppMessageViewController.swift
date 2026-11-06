@@ -71,7 +71,8 @@
 
     /// The primary button (first link, or first button) and the other one.
     private func splitButtons(_ buttons: [InAppButton]) -> (primary: InAppButton?, secondary: InAppButton?) {
-        let primaryIndex = buttons.firstIndex(where: { $0.action == .openUrl }) ?? 0
+        // The first button that acts: opens a link or asks for push permission
+        let primaryIndex = buttons.firstIndex(where: { $0.acts }) ?? 0
         let primary = buttons.indices.contains(primaryIndex) ? buttons[primaryIndex] : nil
         let secondary = buttons.enumerated().first(where: { $0.offset != primaryIndex })?.element
         return (primary, secondary)
@@ -551,7 +552,7 @@
         private func buildBanner() {
             let palette = Palette.surface(style)
             let top = message.resolvedPosition == .top
-            let link = splitButtons(message.buttons).primary.flatMap { $0.action == .openUrl ? $0 : nil }
+            let link = splitButtons(message.buttons).primary.flatMap { $0.acts ? $0 : nil }
 
             panel.backgroundColor = UIColor(sequenzyHex: style.backgroundColor, fallback: .systemBackground)
             panel.layer.cornerRadius = min(CGFloat(style.cornerRadius), 24)
@@ -766,7 +767,7 @@
 
             if let secondary {
                 let secondaryButton = button(
-                    secondary, color: secondary.action == .openUrl ? palette.secondaryLink : palette.secondaryDismiss,
+                    secondary, color: secondary.acts ? palette.secondaryLink : palette.secondaryDismiss,
                     pressedAlpha: 0.6)
                 secondaryButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
                 stack.addArrangedSubview(secondaryButton)

@@ -106,18 +106,45 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct InAppButton: Codable, Equatable, Sendable {
-    public enum Action: String, Codable, Sendable { case openUrl = "open_url", dismiss }
+    public enum Action: String, Codable, Sendable {
+        case openUrl = "open_url", dismiss
+        /// A push primer button: asks for notification permission.
+        case requestPushPermission = "request_push_permission"
+    }
 
     public let label: String
     public let action: Action
-    /// Null for dismiss buttons.
+    /// Null unless the button opens a link.
     public let url: String?
+
+    /// Opens a link or asks for push permission, rather than closing.
+    public var acts: Bool { action != .dismiss }
 
     public init(label: String, action: Action, url: String?) {
         self.label = label
         self.action = action
         self.url = url
     }
+
+    private enum CodingKeys: String, CodingKey { case label, action, url }
+
+    /// An action this version does not know reads as a link when the button
+    /// has one and as a close button otherwise, so one new action never
+    /// fails the whole feed.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        label = try container.decode(String.self, forKey: .label)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        let raw = try container.decodeIfPresent(String.self, forKey: .action)
+        action = raw.flatMap(Action.init(rawValue:)) ?? (url == nil ? .dismiss : .openUrl)
+    }
+}
+
+/// The OS notification permission. `provisional` delivers quietly to
+/// Notification Center; `ephemeral` is an App Clip's temporary permission.
+public enum PushPermissionStatus: String, Codable, Sendable {
+    case granted, provisional, ephemeral, denied
+    case notDetermined = "not_determined"
 }
 
 /// Resolved colors (`#rrggbb`), radii in points and the brand font stack.

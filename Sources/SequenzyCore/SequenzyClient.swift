@@ -1,6 +1,6 @@
 import Foundation
 
-public let sequenzySDKVersion = "0.1.1"
+public let sequenzySDKVersion = "0.1.2"
 
 public struct SequenzyConfiguration: Sendable {
     public static let defaultAPIBaseURL = URL(string: "https://api.sequenzy.com")!
@@ -75,8 +75,11 @@ struct QueuedEvent: Codable, Equatable, Sendable {
     let eventId: String
     let properties: [String: JSONValue]
     let occurredAt: String
-    /// `screen` or `commerce`; nil for custom events.
+    /// `screen`, `commerce` or `geofence`; nil for custom events.
     var type: String? = nil
+    /// `enter` or `exit`, for geofence events.
+    var transition: String? = nil
+    var geofenceId: String? = nil
 
     var json: JSONValue {
         var object: [String: JSONValue] = [
@@ -86,6 +89,8 @@ struct QueuedEvent: Codable, Equatable, Sendable {
             "occurredAt": .string(occurredAt),
         ]
         if let type { object["type"] = .string(type) }
+        if let transition { object["transition"] = .string(transition) }
+        if let geofenceId { object["geofenceId"] = .string(geofenceId) }
         return .object(object)
     }
 }
@@ -118,6 +123,8 @@ public actor SequenzyClient {
         let token: String
         let email: String
         let registeredAt: Date
+        /// Permission sent with this registration; nil when unknown.
+        var permission: PushPermissionStatus?
     }
 
     public let configuration: SequenzyConfiguration
@@ -127,6 +134,10 @@ public actor SequenzyClient {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
     private var identityTokenProvider: IdentityTokenProvider?
+    /// Reads the OS notification permission, sent with every registration.
+    private var pushPermissionReader: (@Sendable () async -> PushPermissionStatus?)?
+    /// True when the app can ask for permission, so the feed includes push primers.
+    private var handlesPushPermission = false
     private var logLevel: SequenzyLogLevel
     private var logHandler: SequenzyLogHandler
 
@@ -186,6 +197,13 @@ public actor SequenzyClient {
         device = info
     }
 
+    /// Lets the client read notification permission (sent with registrations)
+    /// and receive push primers, which ask for it. The UIKit layer sets this.
+    public func setPushPermissionReader(_ reader: (@Sendable () async -> PushPermissionStatus?)?) {
+        pushPermissionReader = reader
+        handlesPushPermission = reader != nil
+    }
+
     // MARK: - Identity
 
     /// Stable per installation until `reset()`.
@@ -222,6 +240,9 @@ public actor SequenzyClient {
             }
             store.set(normalized, forKey: Key.email)
             store.set(nil, forKey: Key.identityToken)
+            // Another contact's recent geofence transitions must not
+            // suppress this one's.
+            store.set(nil, forKey: Self.geofenceTransitionsKey)
         }
         if let identityToken, !identityToken.isEmpty {
             store.set(identityToken, forKey: Key.identityToken)
@@ -257,6 +278,7 @@ public actor SequenzyClient {
         store.set(nil, forKey: Key.pushRegistration)
         store.set(UUID().uuidString.lowercased(), forKey: Key.anonymousId)
         store.set(nil, forKey: Key.profile)
+        store.set(nil, forKey: Self.geofenceTransitionsKey)
         events.removeAll()
         persistEvents()
         retryTask?.cancel()
@@ -624,10 +646,12 @@ public actor SequenzyClient {
     public func registerPushIfNeeded(force: Bool = false) async {
         guard let token = store.string(forKey: Key.pushToken) else { return }
         let identity = email ?? ""
+        let permission = await pushPermissionReader?()
         if !force, let raw = store.string(forKey: Key.pushRegistration),
             let data = raw.data(using: .utf8),
             let last = try? JSONDecoder().decode(PushRegistration.self, from: data),
             last.token == token, last.email == identity,
+            permission == nil || last.permission == permission,
             now().timeIntervalSince(last.registeredAt) < Self.pushRefreshInterval
         {
             return
@@ -640,6 +664,7 @@ public actor SequenzyClient {
             "token": .string(token),
             "anonymousId": .string(anonymousId),
         ]
+        if let permission { base["permission"] = .string(permission.rawValue) }
         for (key, value) in [
             ("appVersion", device.appVersion), ("osVersion", device.osVersion),
             ("deviceName", device.deviceName), ("locale", device.locale),
@@ -683,7 +708,7 @@ public actor SequenzyClient {
         }
         let identified = (try? JSONSerialization.jsonObject(with: response.body) as? [String: Any])?["identified"] as? Bool ?? false
         let registration = PushRegistration(
-            token: token, email: identified ? identity : "", registeredAt: now())
+            token: token, email: identified ? identity : "", registeredAt: now(), permission: permission)
         if let data = try? JSONEncoder().encode(registration) {
             store.set(String(data: data, encoding: .utf8), forKey: Key.pushRegistration)
         }
@@ -836,6 +861,7 @@ public actor SequenzyClient {
     public func fetchFeed(
         kind: InAppMessage.Kind? = nil, limit: Int? = nil, formats: [InAppMessage.Format]? = nil
     ) async throws -> [InAppMessage] {
+        let includePushPrimers = handlesPushPermission
         let result = await withIdentity { email, token in
             var body: [String: JSONValue] = [
                 "companyId": .string(self.configuration.companyId),
@@ -846,6 +872,10 @@ public actor SequenzyClient {
             if let kind { body["kind"] = .string(kind.rawValue) }
             if let limit { body["limit"] = .number(Double(limit)) }
             if let formats { body["formats"] = .array(formats.map { .string($0.rawValue) }) }
+            // Push primers come only when this app can ask for permission
+            if includePushPrimers {
+                body["actions"] = [.string(InAppButton.Action.requestPushPermission.rawValue)]
+            }
             return try await self.post(path: "/api/v1/in-app/feed", body: .object(body))
         }
         switch result {
@@ -862,9 +892,13 @@ public actor SequenzyClient {
     }
 
     /// Reports `displayed`, `clicked`, `dismissed` or `read` for a feed item.
-    /// `buttonId` names the control clicked in a custom HTML message.
+    /// `buttonId` names the control clicked in a custom HTML message. A push
+    /// primer's click carries the permission read after asking.
     @discardableResult
-    public func report(_ type: InAppEventType, messageId: String, buttonId: String? = nil) async -> Bool {
+    public func report(
+        _ type: InAppEventType, messageId: String, buttonId: String? = nil,
+        pushPermission: PushPermissionStatus? = nil
+    ) async -> Bool {
         let result = await withIdentity { email, token in
             var body: [String: JSONValue] = [
                 "companyId": .string(self.configuration.companyId),
@@ -877,6 +911,7 @@ public actor SequenzyClient {
             if let buttonId, type == .clicked, InAppHtmlBridgeMessage.isValidButtonId(buttonId) {
                 body["buttonId"] = .string(buttonId)
             }
+            if let pushPermission { body["pushPermission"] = .string(pushPermission.rawValue) }
             return try await self.post(path: "/api/v1/in-app/feed/events", body: .object(body))
         }
         if case .response(let response) = result, (200..<300).contains(response.status) {
@@ -884,6 +919,78 @@ public actor SequenzyClient {
         }
         log(.error, "Could not report in-app \(type.rawValue) for \(messageId)")
         return false
+    }
+
+    // MARK: - Geofences
+
+    /// The nearest active geofences around a position. The position is
+    /// rounded to two decimals here, whatever the caller passes.
+    public func fetchNearbyGeofences(latitude: Double, longitude: Double, limit: Int) async throws -> NearbyGeofences {
+        let result = await withIdentity { email, token in
+            let body: JSONValue = [
+                "companyId": .string(self.configuration.companyId),
+                "publicKey": .string(self.configuration.publicKey),
+                "email": .string(email),
+                "identityToken": .string(token),
+                "latitude": .number(Geofencing.roundCoordinate(latitude)),
+                "longitude": .number(Geofencing.roundCoordinate(longitude)),
+                "limit": .number(Double(max(1, min(99, limit)))),
+            ]
+            return try await self.post(path: "/api/v1/geofences/nearby", body: body)
+        }
+        switch result {
+        case .notIdentified, .userChanged: throw SequenzyError.notIdentified
+        case .identityRejected: throw SequenzyError.identityRejected
+        case .failed(let error): throw error
+        case .response(let response):
+            guard (200..<300).contains(response.status) else {
+                throw SequenzyError.http(status: response.status, message: errorMessage(response.body))
+            }
+            return try JSONDecoder().decode(NearbyGeofences.self, from: response.body)
+        }
+    }
+
+    /// Queues an enter or exit the OS reported. The refresh region and a
+    /// repeat of the same transition within a minute are ignored. Returns
+    /// whether the transition was queued.
+    @discardableResult
+    public func trackGeofenceTransition(
+        geofenceId rawId: String, transition: GeofenceTransition, at date: Date? = nil
+    ) async -> Bool {
+        let geofenceId = rawId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !geofenceId.isEmpty, geofenceId != GeofenceRegion.refreshRegionId else { return false }
+        // Visits belong to a contact; never queue one for whoever signs in next.
+        guard email != nil else { return false }
+        let occurredAt = date ?? now()
+        var recent = (store.string(forKey: Self.geofenceTransitionsKey))
+            .flatMap { try? JSONDecoder().decode([String: Double].self, from: Data($0.utf8)) } ?? [:]
+        let key = "\(geofenceId):\(transition.rawValue)"
+        if let last = recent[key], abs(occurredAt.timeIntervalSince1970 - last) < Geofencing.debounceInterval {
+            log(.debug, "Ignored repeated geofence \(transition.rawValue) for \(geofenceId)")
+            return false
+        }
+        recent[key] = occurredAt.timeIntervalSince1970
+        let cutoff = now().timeIntervalSince1970 - Self.maxEventAge
+        recent = recent.filter { $0.value > cutoff }
+        if let data = try? JSONEncoder().encode(recent) {
+            store.set(String(decoding: data, as: UTF8.self), forKey: Self.geofenceTransitionsKey)
+        }
+        events.append(
+            QueuedEvent(
+                name: "geofence",
+                eventId: UUID().uuidString.lowercased(),
+                properties: [:],
+                occurredAt: iso8601(occurredAt),
+                type: "geofence",
+                transition: transition.rawValue,
+                geofenceId: geofenceId
+            ))
+        if events.count > Self.maxQueuedEvents {
+            events.removeFirst(events.count - Self.maxQueuedEvents)
+        }
+        persistEvents()
+        await flush()
+        return true
     }
 
     // MARK: - Identity tokens

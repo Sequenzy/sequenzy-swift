@@ -29,11 +29,16 @@ Sequenzy.registerDeviceToken(deviceToken)
 
 Sequenzy.identify(email: user.email)          // after sign-in
 Sequenzy.track("workout_completed", properties: ["minutes": 30])
-await Sequenzy.requestPushAuthorization()
+await Sequenzy.requestPushPermission()        // prompt, or Settings if turned off
 Sequenzy.reset()                               // on sign-out
 
 let cards = try await Sequenzy.fetchCards()    // inbox screen
 ```
+
+Registrations carry the notification permission, and push primers (in-app
+messages with an "Asks for push" button) ask for it from the message.
+`requestPushAuthorization(provisional: true)` delivers quietly to Notification
+Center without a prompt.
 
 `configure` installs a `UNUserNotificationCenter` delegate that shows
 Sequenzy pushes while the app is open and handles taps. If your app sets its
@@ -96,6 +101,31 @@ Activities the app starts itself need `pushType: .token` and
 walks through the Xcode setup (widget extension, Info.plist, target
 membership) and a first test on your iPhone.
 
+## Geofencing
+
+Link `SequenzyGeofences` to report when the signed-in contact enters or leaves
+your [geofences](https://docs.sequenzy.com/concepts/geofences). It is a
+separate product so apps without geofencing never link Core Location.
+
+```swift
+import SequenzyGeofences
+
+// application(_:didFinishLaunchingWithOptions:), after configure; also runs
+// on the background launches iOS makes for region events
+SequenzyGeofences.shared.start()
+// once the user agreed to location-based messages
+SequenzyGeofences.shared.requestAuthorization()   // "When In Use", then "Always"
+SequenzyGeofences.shared.enable()
+SequenzyGeofences.shared.disable()                // consent withdrawn
+```
+
+Add `NSLocationWhenInUseUsageDescription` and
+`NSLocationAlwaysAndWhenInUseUsageDescription` to Info.plist. Monitoring needs
+"Always" access with precise location, and only identified contacts are
+tracked. iOS watches 20 regions per app: the SDK registers the 19 nearest
+geofences plus one region around the device and fetches again when the device
+leaves it. Lower `maxRegions` if the app monitors regions of its own.
+
 ## Layout
 
 | Target                        | Contents                                                        |
@@ -104,6 +134,7 @@ membership) and a first test on your iPhone.
 | `Sequenzy`                    | UIKit facade, APNs, notification taps, Live Activity tokens, in-app presenter, privacy manifest |
 | `SequenzyNotificationService` | Notification Service Extension base class                       |
 | `SequenzyLiveActivities`      | `SequenzyLiveActivityAttributes` for your ActivityAttributes; extension-safe |
+| `SequenzyGeofences`           | Core Location region monitoring for your geofences, privacy manifest |
 
 ## Develop
 

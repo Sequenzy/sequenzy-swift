@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "Sequenzy", targets: ["Sequenzy"]),
         .library(name: "SequenzyNotificationService", targets: ["SequenzyNotificationService"]),
         .library(name: "SequenzyLiveActivities", targets: ["SequenzyLiveActivities"]),
+        .library(name: "SequenzyGeofences", targets: ["SequenzyGeofences"]),
     ],
     targets: [
         // Wire protocol, identity, event queue and payload parsing. Foundation
@@ -26,6 +27,13 @@ let package = Package(
         // The ActivityAttributes protocol and data, with no UIKit, so the
         // Live Activity widget extension can link it.
         .target(name: "SequenzyLiveActivities"),
+        // Core Location region monitoring. A separate product so apps that do
+        // not use geofencing never link Core Location or declare location use.
+        .target(
+            name: "SequenzyGeofences",
+            dependencies: ["Sequenzy"],
+            resources: [.copy("PrivacyInfo.xcprivacy")]
+        ),
         .testTarget(name: "SequenzyCoreTests", dependencies: ["SequenzyCore"]),
     ]
 )

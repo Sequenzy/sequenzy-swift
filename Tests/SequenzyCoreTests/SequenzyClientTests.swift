@@ -245,18 +245,65 @@ final class SequenzyClientTests: XCTestCase {
 
         let messages = try await client.fetchFeed(kind: .message)
         assertMatchesContract(transport.requests(to: "/api/v1/in-app/feed").last, "fetchFeed")
-        XCTAssertEqual(messages.map(\.id), ["iam_modal", "iam_banner", "iam_card"])
+        XCTAssertEqual(messages.map(\.id), ["iam_modal", "iam_banner", "iam_primer", "iam_card"])
+        XCTAssertEqual(messages[2].buttons[0].action, .requestPushPermission)
+        XCTAssertTrue(messages[2].buttons[0].acts)
+        XCTAssertFalse(messages[2].buttons[1].acts)
         XCTAssertEqual(messages[0].resolvedFormat, .modal)
         XCTAssertEqual(messages[0].buttons[0], InAppButton(label: "Upgrade", action: .openUrl, url: "myapp://billing"))
         XCTAssertEqual(messages[0].buttons[1].action, .dismiss)
         XCTAssertEqual(messages[0].style.fontFamilies, ["Inter", "Arial"])
         XCTAssertEqual(messages[1].resolvedPosition, .top)
-        XCTAssertEqual(messages[2].kind, .card)
-        XCTAssertTrue(messages[2].pinned)
+        XCTAssertEqual(messages[3].kind, .card)
+        XCTAssertTrue(messages[3].pinned)
 
         let reported = await client.report(.displayed, messageId: "iam_modal")
         XCTAssertTrue(reported)
         assertMatchesContract(transport.requests.last, "reportInAppEvent")
+    }
+
+    func testSendsThePushPermissionAndRegistersAgainWhenItChanges() async throws {
+        final class Permission: @unchecked Sendable { var status: PushPermissionStatus = .denied }
+        let permission = Permission()
+        let client = makeClient()
+        await client.setPushPermissionReader { permission.status }
+        await client.identify(email: email, identityToken: identityToken)
+        await client.setPushToken(Contract.token)
+        assertMatchesContract(transport.requests(to: "/api/v1/push/app-devices").last, "registerDeviceWithPermission")
+        let count = transport.requests(to: "/api/v1/push/app-devices").count
+        await client.registerPushIfNeeded()
+        XCTAssertEqual(transport.requests(to: "/api/v1/push/app-devices").count, count)
+        permission.status = .granted
+        await client.registerPushIfNeeded()
+        XCTAssertEqual(transport.requests(to: "/api/v1/push/app-devices").count, count + 1)
+        let last = try XCTUnwrap(transport.requests(to: "/api/v1/push/app-devices").last)
+        XCTAssertEqual(transport.json(last)["permission"] as? String, "granted")
+    }
+
+    func testAsksForPushPrimersOnlyWhenTheAppCanAskForPermission() async throws {
+        transport.respond(path: "/api/v1/in-app/feed", status: 200, json: #"{"success":true,"messages":[]}"#)
+        let client = makeClient()
+        await client.identify(email: email, identityToken: identityToken)
+        _ = try await client.fetchFeed(kind: .message)
+        assertMatchesContract(transport.requests(to: "/api/v1/in-app/feed").last, "fetchFeed")
+        await client.setPushPermissionReader { .notDetermined }
+        _ = try await client.fetchFeed(kind: .message)
+        assertMatchesContract(transport.requests(to: "/api/v1/in-app/feed").last, "fetchFeedWithPushPrimers")
+    }
+
+    func testReportsAPushPrimerClickWithThePermission() async {
+        let client = makeClient()
+        await client.identify(email: email, identityToken: identityToken)
+        let reported = await client.report(.clicked, messageId: "iam_primer", pushPermission: .granted)
+        XCTAssertTrue(reported)
+        assertMatchesContract(transport.requests.last, "reportPushPrimerClicked")
+    }
+
+    func testUnknownButtonActionsDoNotFailTheFeed() throws {
+        let decoded = try JSONDecoder().decode(
+            [InAppButton].self,
+            from: Data(#"[{"label":"A","action":"teleport","url":"myapp://x"},{"label":"B","action":"teleport"}]"#.utf8))
+        XCTAssertEqual(decoded.map(\.action), [.openUrl, .dismiss])
     }
 
     func testResetUnregistersTheDeviceAndForgetsTheUser() async {

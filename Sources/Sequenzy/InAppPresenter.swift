@@ -141,8 +141,14 @@
             case .dismissed:
                 Sequenzy.reportFromPresenter(.dismissed, messageId: message.id)
             case .tapped(let button):
+                // A banner tap (nil) acts like its primary button
+                let target = button ?? message.buttons.first(where: { $0.acts })
+                if target?.action == .requestPushPermission {
+                    Sequenzy.requestPermissionAndReport(messageId: message.id)
+                    break
+                }
                 Sequenzy.reportFromPresenter(.clicked, messageId: message.id)
-                if let raw = button?.url ?? message.buttons.first(where: { $0.action == .openUrl })?.url,
+                if let raw = target?.url ?? message.buttons.first(where: { $0.action == .openUrl })?.url,
                     let url = URL(string: raw)
                 {
                     Sequenzy.open(url, from: message)
