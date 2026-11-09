@@ -1,7 +1,9 @@
 import Foundation
 
 /// An item in the contact's in-app feed: a message (shown over the app) or a
-/// content card (listed inside it). Mirrors `InAppMessageView` on the server.
+/// content card (listed inside it). Placement items, drawn inline in a
+/// placement slot, read as cards with a `placement` key (`isPlacement`).
+/// Mirrors `InAppMessageView` on the server.
 public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
     public enum Kind: String, Codable, Sendable { case message, card }
     /// `html`: a custom HTML message, rendered in a sandboxed web view with
@@ -10,6 +12,8 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
     /// Banners: top or bottom. Modals: bottom (a sheet) or center.
     public enum Position: String, Codable, Sendable { case top, bottom, center }
     public enum ImagePlacement: String, Codable, Sendable { case top, background }
+    /// How a placement item is drawn in its slot (mobile-sdks/DESIGN.md).
+    public enum PlacementLayout: String, Codable, Sendable { case card, banner, hero }
 
     public let id: String
     public let kind: Kind
@@ -26,6 +30,11 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
     public let data: [String: String]
     public let style: InAppStyle
     public let pinned: Bool
+    /// Placement items: the placement key they fill.
+    public let placement: String?
+    /// Placement items: card, banner or hero; `.card` for other kinds and
+    /// values from a newer server.
+    public let layout: PlacementLayout
     public let createdAt: String
     public let expiresAt: String?
     public let displayedAt: String?
@@ -40,13 +49,16 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
     public var resolvedFormat: Format { format ?? .modal }
     public var resolvedPosition: Position { position ?? .bottom }
     public var isRead: Bool { readAt != nil }
+    /// Drawn inline in a placement slot (`SequenzyPlacementView`), never in
+    /// the feed.
+    public var isPlacement: Bool { placement != nil }
 
     public init(
         id: String, kind: Kind, format: Format?, position: Position?, eyebrow: String = "", title: String,
         body: String, imageUrl: String?, imagePlacement: ImagePlacement? = nil, buttons: [InAppButton],
-        data: [String: String], style: InAppStyle, pinned: Bool, createdAt: String, expiresAt: String?,
-        displayedAt: String?, readAt: String?, dismissedAt: String?, html: String? = nil,
-        showCloseButton: Bool = false
+        data: [String: String], style: InAppStyle, pinned: Bool, placement: String? = nil,
+        layout: PlacementLayout = .card, createdAt: String, expiresAt: String?, displayedAt: String?, readAt: String?, dismissedAt: String?,
+        html: String? = nil, showCloseButton: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -61,6 +73,8 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
         self.data = data
         self.style = style
         self.pinned = pinned
+        self.placement = placement
+        self.layout = layout
         self.createdAt = createdAt
         self.expiresAt = expiresAt
         self.displayedAt = displayedAt
@@ -72,7 +86,8 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, kind, format, position, eyebrow, title, body, imageUrl, imagePlacement, buttons, data, style
-        case pinned, createdAt, expiresAt, displayedAt, readAt, dismissedAt, html, showCloseButton
+        case pinned, placement, layout, createdAt, expiresAt, displayedAt, readAt, dismissedAt, html
+        case showCloseButton
     }
 
     /// Unknown enum values from a newer server decode as nil instead of
@@ -83,7 +98,14 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
             (try? container.decodeIfPresent(String.self, forKey: key)).flatMap(T.init(rawValue:))
         }
         id = try container.decode(String.self, forKey: .id)
-        kind = try container.decode(Kind.self, forKey: .kind)
+        // Placement items keep the card layout; reading them as cards keeps
+        // exhaustive switches over Kind in apps compiling.
+        let rawKind = try container.decode(String.self, forKey: .kind)
+        guard let decodedKind = rawKind == "placement" ? .card : Kind(rawValue: rawKind) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind, in: container, debugDescription: "Unknown in-app kind \(rawKind)")
+        }
+        kind = decodedKind
         format = lenient(.format)
         position = lenient(.position)
         eyebrow = (try? container.decodeIfPresent(String.self, forKey: .eyebrow)) ?? ""
@@ -95,6 +117,8 @@ public struct InAppMessage: Codable, Equatable, Identifiable, Sendable {
         data = try container.decodeIfPresent([String: String].self, forKey: .data) ?? [:]
         style = try container.decode(InAppStyle.self, forKey: .style)
         pinned = (try? container.decodeIfPresent(Bool.self, forKey: .pinned)) ?? false
+        placement = try? container.decodeIfPresent(String.self, forKey: .placement)
+        layout = lenient(.layout) ?? .card
         createdAt = (try? container.decodeIfPresent(String.self, forKey: .createdAt)) ?? ""
         expiresAt = try? container.decodeIfPresent(String.self, forKey: .expiresAt)
         displayedAt = try? container.decodeIfPresent(String.self, forKey: .displayedAt)

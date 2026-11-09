@@ -67,6 +67,9 @@
         ///   - appId: Defaults to the bundle ID. Add it to the key's allowed app IDs.
         ///   - identityTokenProvider: Fetches a fresh identity token from your
         ///     backend when the stored one is missing or expired.
+        ///   - userIdentityTokenProvider: The same for users identified with
+        ///     `identifyUser`: mint the token for the external ID (and the
+        ///     email, when it is passed).
         ///   - showInAppMessages: Set false to present messages yourself from
         ///     `fetchMessages()`.
         public static func configure(
@@ -75,6 +78,7 @@
             appId: String? = Bundle.main.bundleIdentifier,
             apiBaseURL: URL = SequenzyConfiguration.defaultAPIBaseURL,
             identityTokenProvider: IdentityTokenProvider? = nil,
+            userIdentityTokenProvider: UserIdentityTokenProvider? = nil,
             showInAppMessages: Bool = true,
             logLevel: SequenzyLogLevel = .error
         ) {
@@ -86,6 +90,7 @@
                 configuration: configuration,
                 device: currentDeviceInfo(),
                 identityTokenProvider: identityTokenProvider,
+                userIdentityTokenProvider: userIdentityTokenProvider,
                 logLevel: logLevel)
             client = newClient
             showsInAppMessagesAutomatically = showInAppMessages
@@ -114,8 +119,24 @@
             guard let client = requireClient() else { return }
             enqueue {
                 await client.identify(email: email, identityToken: identityToken)
-                let signedIn = await client.email
+                let signedIn = await client.contactKey
                 presenter?.signedIn(as: signedIn)
+                SequenzyPlacements.shared.identityChanged(email: signedIn)
+                await refreshMessages(force: true)
+            }
+        }
+
+        /// Identifies the user by your own user ID, for users without an
+        /// email (Sign in with Apple with a hidden address, phone login).
+        /// Pass `email` too when you have it; the identity token must be
+        /// minted for exactly these identifiers.
+        public static func identifyUser(_ externalId: String, email: String? = nil, identityToken: String? = nil) {
+            guard let client = requireClient() else { return }
+            enqueue {
+                await client.identifyUser(externalId, email: email, identityToken: identityToken)
+                let signedIn = await client.contactKey
+                presenter?.signedIn(as: signedIn)
+                SequenzyPlacements.shared.identityChanged(email: signedIn)
                 await refreshMessages(force: true)
             }
         }
@@ -132,6 +153,7 @@
                 // After the reset, so no fetch queued before it can bring the
                 // previous user's messages back.
                 presenter?.dismissAll()
+                SequenzyPlacements.shared.identityChanged(email: nil)
             }
         }
 
@@ -193,6 +215,11 @@
         public static func setIdentityTokenProvider(_ provider: IdentityTokenProvider?) {
             guard let client = requireClient() else { return }
             enqueue { await client.setIdentityTokenProvider(provider) }
+        }
+
+        public static func setUserIdentityTokenProvider(_ provider: UserIdentityTokenProvider?) {
+            guard let client = requireClient() else { return }
+            enqueue { await client.setUserIdentityTokenProvider(provider) }
         }
 
         // MARK: Push
@@ -299,9 +326,9 @@
             // to a fetch that ran a moment after it was scheduled.
             if !force, let lastFeedFetch, Date().timeIntervalSince(lastFeedFetch) < feedRefreshInterval * 0.9 { return }
             lastFeedFetch = Date()
-            let owner = await client.email
+            let owner = await client.contactKey
             guard let messages = try? await client.fetchFeed(kind: .message, formats: displayedFormats),
-                await client.email == owner
+                await client.contactKey == owner
             else { return }
             presenter?.enqueue(messages, owner: owner)
         }
@@ -349,9 +376,16 @@
 
         // MARK: Geofences
 
-        /// The identified contact's email, or nil. Geofencing runs only then.
+        /// The identified contact's email, or nil (also for a user identified
+        /// by external ID only).
         public static func identifiedEmail() async -> String? {
             await client?.email
+        }
+
+        /// One string per identified contact (see `SequenzyClient.contactKey`),
+        /// or nil while anonymous. Geofencing runs only while it is set.
+        public static func identifiedContact() async -> String? {
+            await client?.contactKey
         }
 
         /// The nearest geofences around a position. `SequenzyGeofences` calls
@@ -385,6 +419,9 @@
             UIApplication.shared.open(url)
         }
 
+        /// The configured client, without the warning `requireClient` prints.
+        static var currentClient: SequenzyClient? { client }
+
         static func requireClient() -> SequenzyClient? {
             if client == nil {
                 print("[Sequenzy] Call Sequenzy.configure(publicKey:companyId:) first")
@@ -412,6 +449,7 @@
                             await client.flush()
                             await client.registerPushIfNeeded()
                             await Sequenzy.refreshMessages()
+                            SequenzyPlacements.shared.didBecomeActive()
                         }
                     }
                 })

@@ -28,6 +28,7 @@ Sequenzy.configure(
 Sequenzy.registerDeviceToken(deviceToken)
 
 Sequenzy.identify(email: user.email)          // after sign-in
+Sequenzy.identifyUser(user.id)                 // or by your user ID, for users without an email
 Sequenzy.track("workout_completed", properties: ["minutes": 30])
 await Sequenzy.requestPushPermission()        // prompt, or Settings if turned off
 Sequenzy.reset()                               // on sign-out
@@ -52,6 +53,20 @@ yourself (`sequenzyHandle(url:from:)`).
 import SequenzyNotificationService
 class NotificationService: SequenzyNotificationServiceExtension {}
 ```
+
+## Placements
+
+Show in-app content inline, in a slot of your own layout, for a
+[placement](https://docs.sequenzy.com/concepts/in-app-placements) defined in Sequenzy. The view takes no space
+while the contact has nothing to show.
+
+```swift
+SequenzyPlacement("home_hero")                       // SwiftUI
+stack.addArrangedSubview(SequenzyPlacementView(placementId: "home_hero"))  // UIKit
+```
+
+To draw it yourself, observe `SequenzyPlacements.shared.observe("home_hero") { item in }` and
+report with `logDisplayed(_:)`, `dismiss(_:)` and `Sequenzy.handleButtonTap(_:in:)`.
 
 ## Custom HTML messages
 
@@ -156,3 +171,11 @@ sources with every release.
   and [in-app messages](https://docs.sequenzy.com/concepts/in-app-messages)
 - [Pricing](https://sequenzy.com/pricing)
 - Other Sequenzy SDKs: [Android](https://github.com/Sequenzy/sequenzy-android), [React Native](https://github.com/Sequenzy/sequenzy-react-native), [Flutter](https://github.com/Sequenzy/sequenzy-flutter)
+
+## Users without an email
+
+For users who sign in without an email (a hidden Apple address, phone login),
+mint the identity token for your user ID as `externalId` and call
+`identifyUser` with the same ID (and the email, when you minted with it). Set
+`userIdentityTokenProvider` to renew these tokens. See
+[Users without an email](https://docs.sequenzy.com/concepts/mobile-sdks#users-without-an-email).

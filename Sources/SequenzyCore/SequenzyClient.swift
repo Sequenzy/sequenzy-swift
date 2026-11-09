@@ -1,6 +1,6 @@
 import Foundation
 
-public let sequenzySDKVersion = "0.1.2"
+public let sequenzySDKVersion = "0.1.3"
 
 public struct SequenzyConfiguration: Sendable {
     public static let defaultAPIBaseURL = URL(string: "https://api.sequenzy.com")!
@@ -57,6 +57,11 @@ public struct DeviceInfo: Sendable, Equatable {
 /// Asks the host app's backend for a fresh identity token for `email`.
 public typealias IdentityTokenProvider = @Sendable (_ email: String) async throws -> String
 
+/// Asks the host app's backend for a fresh identity token for a user
+/// identified with `identifyUser`: mint it for `externalId`, plus `email`
+/// when it is set.
+public typealias UserIdentityTokenProvider = @Sendable (_ externalId: String, _ email: String?) async throws -> String
+
 public enum SequenzyLogLevel: Int, Comparable, Sendable {
     case none = 0, error, info, debug
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
@@ -107,10 +112,13 @@ public actor SequenzyClient {
     public static let maxPropertiesBytes = 8 * 1024
     static let providerRetryInterval: TimeInterval = 60
     static let providerTimeout: TimeInterval = 20
+    /// Server limit for an external ID (the contact's `externalId`).
+    public static let maxExternalIdLength = 255
 
     private enum Key {
         static let anonymousId = "anonymousId"
         static let email = "email"
+        static let externalId = "externalId"
         static let identityToken = "identityToken"
         static let events = "events"
         static let pushToken = "pushToken"
@@ -121,6 +129,7 @@ public actor SequenzyClient {
 
     private struct PushRegistration: Codable {
         let token: String
+        /// The contact key (see `contactKey`) the device was linked to.
         let email: String
         let registeredAt: Date
         /// Permission sent with this registration; nil when unknown.
@@ -134,6 +143,7 @@ public actor SequenzyClient {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
     private var identityTokenProvider: IdentityTokenProvider?
+    private var userIdentityTokenProvider: UserIdentityTokenProvider?
     /// Reads the OS notification permission, sent with every registration.
     private var pushPermissionReader: (@Sendable () async -> PushPermissionStatus?)?
     /// True when the app can ask for permission, so the feed includes push primers.
@@ -158,6 +168,7 @@ public actor SequenzyClient {
         store: SequenzyStore = UserDefaultsStore(),
         device: DeviceInfo = DeviceInfo(),
         identityTokenProvider: IdentityTokenProvider? = nil,
+        userIdentityTokenProvider: UserIdentityTokenProvider? = nil,
         logLevel: SequenzyLogLevel = .error,
         logHandler: SequenzyLogHandler? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
@@ -170,6 +181,7 @@ public actor SequenzyClient {
         self.store = store
         self.device = device
         self.identityTokenProvider = identityTokenProvider
+        self.userIdentityTokenProvider = userIdentityTokenProvider
         self.logLevel = logLevel
         self.logHandler = logHandler ?? { level, message in print("[Sequenzy] \(level): \(message)") }
         self.now = now
@@ -187,6 +199,11 @@ public actor SequenzyClient {
 
     public func setIdentityTokenProvider(_ provider: IdentityTokenProvider?) {
         identityTokenProvider = provider
+    }
+
+    /// Fresh tokens for users identified with `identifyUser`.
+    public func setUserIdentityTokenProvider(_ provider: UserIdentityTokenProvider?) {
+        userIdentityTokenProvider = provider
     }
 
     public func setLogLevel(_ level: SequenzyLogLevel) {
@@ -218,28 +235,84 @@ public actor SequenzyClient {
 
     public var email: String? { store.string(forKey: Key.email) }
 
+    /// The user ID passed to `identifyUser`, or nil.
+    public var externalId: String? { store.string(forKey: Key.externalId) }
+
+    /// One string per signed-in contact: the external ID when the app
+    /// identified the user by it, otherwise the email; nil while anonymous.
+    /// Compare it to notice that another user signed in. The space keeps an
+    /// external ID from ever equalling an email.
+    public var contactKey: String? { Self.contactKey(email: email, externalId: externalId) }
+
+    private static func contactKey(email: String?, externalId: String?) -> String? {
+        externalId.map { "external \($0)" } ?? email
+    }
+
+    /// The identifiers every identified request carries.
+    private var identityFields: [String: JSONValue] {
+        var fields: [String: JSONValue] = [:]
+        if let email { fields["email"] = .string(email) }
+        if let externalId { fields["externalId"] = .string(externalId) }
+        return fields
+    }
+
     public var queuedEventCount: Int { events.count }
 
-    /// Links this installation to a contact. Pass the identity token your
-    /// backend minted, or rely on the identity token provider.
+    /// Links this installation to the contact with this email. Pass the
+    /// identity token your backend minted, or rely on the identity token
+    /// provider.
     public func identify(email rawEmail: String, identityToken: String? = nil) async {
         let normalized = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard normalized.contains("@"), !normalized.contains(" ") else {
             log(.error, "identify was called with an invalid email address")
             return
         }
-        let previous = email
-        if previous != normalized {
-            if previous != nil {
-                // Events queued for the previous user must not be sent as
-                // the new one. Anonymous events carry over to the first
-                // identified user, which is the point of queueing them.
-                events.removeAll()
-                persistEvents()
-                store.set(nil, forKey: Key.profile)
+        await identify(email: normalized, externalId: nil, identityToken: identityToken)
+    }
+
+    /// Links this installation to the contact with your own user ID, for
+    /// users without an email (Sign in with Apple with a hidden address,
+    /// phone login). Pass `email` too when you have it. The identity token
+    /// must be minted for exactly these identifiers; without one, the user
+    /// identity token provider is asked.
+    public func identifyUser(_ rawExternalId: String, email rawEmail: String? = nil, identityToken: String? = nil) async {
+        let externalId = rawExternalId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !externalId.isEmpty, externalId.count <= Self.maxExternalIdLength else {
+            log(.error, "identifyUser needs a user ID of 1 to \(Self.maxExternalIdLength) characters")
+            return
+        }
+        var normalizedEmail: String?
+        if let rawEmail, !rawEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let normalized = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard normalized.contains("@"), !normalized.contains(" ") else {
+                log(.error, "identifyUser was called with an invalid email address")
+                return
             }
-            store.set(normalized, forKey: Key.email)
+            normalizedEmail = normalized
+        }
+        await identify(email: normalizedEmail, externalId: externalId, identityToken: identityToken)
+    }
+
+    private func identify(email nextEmail: String?, externalId nextExternalId: String?, identityToken: String?) async {
+        let previous = contactKey
+        let nextKey = Self.contactKey(email: nextEmail, externalId: nextExternalId)
+        let contactChanged = previous != nextKey
+        let identifiersChanged = email != nextEmail || externalId != nextExternalId
+        if previous != nil, contactChanged {
+            // Events queued for the previous user must not be sent as
+            // the new one. Anonymous events carry over to the first
+            // identified user, which is the point of queueing them.
+            events.removeAll()
+            persistEvents()
+            store.set(nil, forKey: Key.profile)
+        }
+        if identifiersChanged {
+            // A token verifies only with the exact identifiers it was minted for.
+            store.set(nextEmail, forKey: Key.email)
+            store.set(nextExternalId, forKey: Key.externalId)
             store.set(nil, forKey: Key.identityToken)
+        }
+        if contactChanged {
             // Another contact's recent geofence transitions must not
             // suppress this one's.
             store.set(nil, forKey: Self.geofenceTransitionsKey)
@@ -249,9 +322,9 @@ public actor SequenzyClient {
         }
         identityBlocked = false
         providerRetryAt = nil
-        await registerPushIfNeeded(force: previous != normalized)
-        if previous != normalized {
-            if previous != nil {
+        await registerPushIfNeeded(force: identifiersChanged)
+        if identifiersChanged {
+            if previous != nil, contactChanged {
                 // Another user signed in without reset: the previous user's
                 // running activities stay theirs, and only the device's
                 // push-to-start tokens move to the new contact.
@@ -274,6 +347,7 @@ public actor SequenzyClient {
         // tokens belong to the device and are registered again anonymously.
         saveLiveActivityTokens(liveTokens.filter { $0.kind == .pushToStart })
         store.set(nil, forKey: Key.email)
+        store.set(nil, forKey: Key.externalId)
         store.set(nil, forKey: Key.identityToken)
         store.set(nil, forKey: Key.pushRegistration)
         store.set(UUID().uuidString.lowercased(), forKey: Key.anonymousId)
@@ -309,7 +383,7 @@ public actor SequenzyClient {
         }
         // Someone signed in while the removes were in flight; their
         // registration may have reached the server first, so register again.
-        if email != nil, token != nil {
+        if contactKey != nil, token != nil {
             await registerPushIfNeeded(force: true)
         }
         // Unlinked push-to-start tokens come back for the new anonymous id
@@ -413,7 +487,7 @@ public actor SequenzyClient {
         // actor is reentrant) lands in the store; loop until none is left.
         repeat {
             while let profile = pendingProfile {
-                guard email != nil, !identityBlocked else { return }
+                guard contactKey != nil, !identityBlocked else { return }
                 if let nextAttemptAt, nextAttemptAt > now() { return }
                 let sent = store.string(forKey: Key.profile)
                 switch await sendProfile(profile) {
@@ -433,7 +507,7 @@ public actor SequenzyClient {
             }
             dropStaleEvents()
             while !events.isEmpty {
-                guard email != nil, !identityBlocked else { return }
+                guard contactKey != nil, !identityBlocked else { return }
                 if let nextAttemptAt, nextAttemptAt > now() { return }
 
                 let batch = Array(events.prefix(Self.maxBatchSize))
@@ -458,15 +532,13 @@ public actor SequenzyClient {
     private enum BatchOutcome { case delivered, dropped, retryLater, stop }
 
     private func sendBatch(_ batch: [QueuedEvent]) async -> BatchOutcome {
-        let result = await withIdentity { email, token in
-            let body: JSONValue = [
-                "companyId": .string(self.configuration.companyId),
-                "publicKey": .string(self.configuration.publicKey),
-                "email": .string(email),
-                "identityToken": .string(token),
-                "events": .array(batch.map(\.json)),
-            ]
-            return try await self.post(path: "/api/v1/app-events", body: body)
+        let result = await withIdentity { identity, token in
+            var body = identity
+            body["companyId"] = .string(self.configuration.companyId)
+            body["publicKey"] = .string(self.configuration.publicKey)
+            body["identityToken"] = .string(token)
+            body["events"] = .array(batch.map(\.json))
+            return try await self.post(path: "/api/v1/app-events", body: .object(body))
         }
         switch result {
         case .notIdentified, .identityRejected, .userChanged:
@@ -524,11 +596,11 @@ public actor SequenzyClient {
     }
 
     private func sendProfile(_ profile: [String: JSONValue]) async -> BatchOutcome {
-        let result = await withIdentity { email, token in
+        let result = await withIdentity { identity, token in
             var body = profile
             body["companyId"] = .string(self.configuration.companyId)
             body["publicKey"] = .string(self.configuration.publicKey)
-            body["email"] = .string(email)
+            body.merge(identity) { _, new in new }
             body["identityToken"] = .string(token)
             return try await self.post(path: "/api/v1/app-attributes", body: .object(body))
         }
@@ -645,7 +717,7 @@ public actor SequenzyClient {
     /// or the last registration is more than a day old.
     public func registerPushIfNeeded(force: Bool = false) async {
         guard let token = store.string(forKey: Key.pushToken) else { return }
-        let identity = email ?? ""
+        let identity = contactKey ?? ""
         let permission = await pushPermissionReader?()
         if !force, let raw = store.string(forKey: Key.pushRegistration),
             let data = raw.data(using: .utf8),
@@ -675,10 +747,10 @@ public actor SequenzyClient {
 
         let anonymousBody = base
         let response: SequenzyHTTPResponse
-        if email != nil {
-            let result = await withIdentity { email, identityToken in
+        if contactKey != nil {
+            let result = await withIdentity { fields, identityToken in
                 var body = anonymousBody
-                body["email"] = .string(email)
+                body.merge(fields) { _, new in new }
                 body["identityToken"] = .string(identityToken)
                 return try await self.post(path: "/api/v1/push/app-devices", body: .object(body))
             }
@@ -806,10 +878,10 @@ public actor SequenzyClient {
 
         let anonymousBody = base
         let response: SequenzyHTTPResponse?
-        if email != nil {
-            let result = await withIdentity { email, identityToken in
+        if contactKey != nil {
+            let result = await withIdentity { fields, identityToken in
                 var body = anonymousBody
-                body["email"] = .string(email)
+                body.merge(fields) { _, new in new }
                 body["identityToken"] = .string(identityToken)
                 return try await self.post(path: Self.liveActivitiesPath, body: .object(body))
             }
@@ -862,13 +934,11 @@ public actor SequenzyClient {
         kind: InAppMessage.Kind? = nil, limit: Int? = nil, formats: [InAppMessage.Format]? = nil
     ) async throws -> [InAppMessage] {
         let includePushPrimers = handlesPushPermission
-        let result = await withIdentity { email, token in
-            var body: [String: JSONValue] = [
-                "companyId": .string(self.configuration.companyId),
-                "publicKey": .string(self.configuration.publicKey),
-                "email": .string(email),
-                "identityToken": .string(token),
-            ]
+        let result = await withIdentity { identity, token in
+            var body = identity
+            body["companyId"] = .string(self.configuration.companyId)
+            body["publicKey"] = .string(self.configuration.publicKey)
+            body["identityToken"] = .string(token)
             if let kind { body["kind"] = .string(kind.rawValue) }
             if let limit { body["limit"] = .number(Double(limit)) }
             if let formats { body["formats"] = .array(formats.map { .string($0.rawValue) }) }
@@ -899,15 +969,13 @@ public actor SequenzyClient {
         _ type: InAppEventType, messageId: String, buttonId: String? = nil,
         pushPermission: PushPermissionStatus? = nil
     ) async -> Bool {
-        let result = await withIdentity { email, token in
-            var body: [String: JSONValue] = [
-                "companyId": .string(self.configuration.companyId),
-                "publicKey": .string(self.configuration.publicKey),
-                "email": .string(email),
-                "identityToken": .string(token),
-                "messageId": .string(messageId),
-                "type": .string(type.rawValue),
-            ]
+        let result = await withIdentity { identity, token in
+            var body = identity
+            body["companyId"] = .string(self.configuration.companyId)
+            body["publicKey"] = .string(self.configuration.publicKey)
+            body["identityToken"] = .string(token)
+            body["messageId"] = .string(messageId)
+            body["type"] = .string(type.rawValue)
             if let buttonId, type == .clicked, InAppHtmlBridgeMessage.isValidButtonId(buttonId) {
                 body["buttonId"] = .string(buttonId)
             }
@@ -921,22 +989,75 @@ public actor SequenzyClient {
         return false
     }
 
+    /// Placement keys one request can ask for.
+    public static let maxPlacementsPerRequest = 10
+
+    /// What each placement shows the identified contact: its highest-priority
+    /// open item. Keys missing from the result have nothing to show, so their
+    /// slots collapse. Up to `maxPlacementsPerRequest` keys.
+    public func fetchPlacements(_ placements: [String]) async throws -> [String: InAppMessage] {
+        var seen = Set<String>()
+        let keys = placements
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .prefix(Self.maxPlacementsPerRequest)
+        guard !keys.isEmpty else { return [:] }
+        let includePushPrimers = handlesPushPermission
+        let result = await withIdentity { identity, token in
+            var body = identity
+            body["companyId"] = .string(self.configuration.companyId)
+            body["publicKey"] = .string(self.configuration.publicKey)
+            body["identityToken"] = .string(token)
+            body["placements"] = .array(keys.map { .string($0) })
+            if includePushPrimers {
+                body["actions"] = [.string(InAppButton.Action.requestPushPermission.rawValue)]
+            }
+            return try await self.post(path: "/api/v1/in-app/feed/placements", body: .object(body))
+        }
+        switch result {
+        case .notIdentified, .userChanged: throw SequenzyError.notIdentified
+        case .identityRejected: throw SequenzyError.identityRejected
+        case .failed(let error): throw error
+        case .response(let response):
+            guard (200..<300).contains(response.status) else {
+                throw SequenzyError.http(status: response.status, message: errorMessage(response.body))
+            }
+            // One malformed item empties its own slot, not every slot.
+            struct Entry: Decodable {
+                let placement: String
+                let message: InAppMessage?
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    placement = try container.decode(String.self, forKey: .placement)
+                    message = try? container.decodeIfPresent(InAppMessage.self, forKey: .message)
+                }
+                enum CodingKeys: String, CodingKey { case placement, message }
+            }
+            struct Placements: Decodable { let placements: [Entry] }
+            let requested = Set(keys)
+            var items: [String: InAppMessage] = [:]
+            for entry in try JSONDecoder().decode(Placements.self, from: response.body).placements
+            where requested.contains(entry.placement) {
+                items[entry.placement] = entry.message
+            }
+            return items
+        }
+    }
+
     // MARK: - Geofences
 
     /// The nearest active geofences around a position. The position is
     /// rounded to two decimals here, whatever the caller passes.
     public func fetchNearbyGeofences(latitude: Double, longitude: Double, limit: Int) async throws -> NearbyGeofences {
-        let result = await withIdentity { email, token in
-            let body: JSONValue = [
-                "companyId": .string(self.configuration.companyId),
-                "publicKey": .string(self.configuration.publicKey),
-                "email": .string(email),
-                "identityToken": .string(token),
-                "latitude": .number(Geofencing.roundCoordinate(latitude)),
-                "longitude": .number(Geofencing.roundCoordinate(longitude)),
-                "limit": .number(Double(max(1, min(99, limit)))),
-            ]
-            return try await self.post(path: "/api/v1/geofences/nearby", body: body)
+        let result = await withIdentity { identity, token in
+            var body = identity
+            body["companyId"] = .string(self.configuration.companyId)
+            body["publicKey"] = .string(self.configuration.publicKey)
+            body["identityToken"] = .string(token)
+            body["latitude"] = .number(Geofencing.roundCoordinate(latitude))
+            body["longitude"] = .number(Geofencing.roundCoordinate(longitude))
+            body["limit"] = .number(Double(max(1, min(99, limit))))
+            return try await self.post(path: "/api/v1/geofences/nearby", body: .object(body))
         }
         switch result {
         case .notIdentified, .userChanged: throw SequenzyError.notIdentified
@@ -960,7 +1081,7 @@ public actor SequenzyClient {
         let geofenceId = rawId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !geofenceId.isEmpty, geofenceId != GeofenceRegion.refreshRegionId else { return false }
         // Visits belong to a contact; never queue one for whoever signs in next.
-        guard email != nil else { return false }
+        guard contactKey != nil else { return false }
         let occurredAt = date ?? now()
         var recent = (store.string(forKey: Self.geofenceTransitionsKey))
             .flatMap { try? JSONDecoder().decode([String: Double].self, from: Data($0.utf8)) } ?? [:]
@@ -1004,56 +1125,71 @@ public actor SequenzyClient {
         case failed(Error)
     }
 
-    /// Runs `operation` with the stored email and identity token, fetching a
-    /// token from the provider when none is stored, and once more when the
-    /// server rejects the stored one.
+    /// Runs `operation` with the stored identifiers and identity token,
+    /// fetching a token from the provider when none is stored, and once more
+    /// when the server rejects the stored one.
     private func withIdentity(
-        _ operation: @Sendable (String, String) async throws -> SequenzyHTTPResponse
+        _ operation: @Sendable ([String: JSONValue], String) async throws -> SequenzyHTTPResponse
     ) async -> IdentifiedResult {
-        guard let email, !identityBlocked else { return .notIdentified }
+        guard let contact = contactKey, !identityBlocked else { return .notIdentified }
+        let identity = identityFields
         var usedProvider = false
         var token = store.string(forKey: Key.identityToken)
         if token == nil {
-            token = await tokenFromProvider(email: email)
+            token = await tokenFromProvider()
             usedProvider = true
         }
         guard var current = token else {
-            log(.info, "No identity token yet; call identify(email:identityToken:) or set an identity token provider")
+            log(.info, "No identity token yet; pass one to identify or identifyUser, or set an identity token provider")
             return .notIdentified
         }
 
         while true {
             let response: SequenzyHTTPResponse
             do {
-                response = try await operation(email, current)
+                response = try await operation(identity, current)
             } catch {
                 return .failed(error)
             }
             guard isIdentityRejection(response) else { return .response(response) }
             // The user changed while this request was in flight: its rejection
             // is about the previous user and must not touch the new one.
-            guard self.email == email else { return .userChanged }
+            guard contactKey == contact, identityFields == identity else { return .userChanged }
 
             store.set(nil, forKey: Key.identityToken)
-            if !usedProvider, let fresh = await tokenFromProvider(email: email) {
+            if !usedProvider, let fresh = await tokenFromProvider() {
                 usedProvider = true
                 current = fresh
                 continue
             }
             identityBlocked = true
-            log(.error, "The identity token was rejected; call identify(email:identityToken:) with a fresh token")
+            log(.error, "The identity token was rejected; call identify or identifyUser again with a fresh token")
             return .identityRejected
         }
     }
 
-    private func tokenFromProvider(email: String) async -> String? {
-        guard let identityTokenProvider else { return nil }
+    /// A fresh token for the current identity: from the user identity token
+    /// provider for a user identified by external ID, otherwise from the
+    /// identity token provider with the email.
+    private func tokenFromProvider() async -> String? {
+        let contact = contactKey
+        let identity = identityFields
+        let request: (@Sendable () async throws -> String)?
+        if let externalId {
+            let email = email
+            request = userIdentityTokenProvider.map { provider in { try await provider(externalId, email) } }
+        } else if let email {
+            request = identityTokenProvider.map { provider in { try await provider(email) } }
+        } else {
+            request = nil
+        }
+        guard let request else { return nil }
         if let providerRetryAt, providerRetryAt > now() { return nil }
         do {
             // Calls run in order, so a provider that never returns would stall
             // every later call without the timeout.
             let token = try await withThrowingTaskGroup(of: String.self) { group in
-                group.addTask { try await identityTokenProvider(email) }
+                group.addTask { try await request() }
                 group.addTask { [sleep] in
                     await sleep(Self.providerTimeout)
                     throw SequenzyError.http(status: 0, message: "The identity token provider timed out")
@@ -1062,7 +1198,9 @@ public actor SequenzyClient {
                 guard let first = try await group.next() else { throw CancellationError() }
                 return first
             }
-            guard !token.isEmpty, self.email == email else { return nil }
+            // The actor can run an identify while the provider is pending: a
+            // token minted for other identifiers must not replace the new one.
+            guard !token.isEmpty, contactKey == contact, identityFields == identity else { return nil }
             store.set(token, forKey: Key.identityToken)
             return token
         } catch {

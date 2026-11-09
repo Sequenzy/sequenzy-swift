@@ -128,7 +128,7 @@
 
         private func fetch(latitude: Double, longitude: Double) async {
             guard isEnabled else { return }
-            guard await Sequenzy.identifiedEmail() != nil else {
+            guard await Sequenzy.identifiedContact() != nil else {
                 // Visits are recorded on a contact; nobody is signed in.
                 apply([])
                 return
@@ -187,7 +187,7 @@
             }
             let occurredAt = Date()
             Task { @MainActor in
-                if await Sequenzy.identifiedEmail() != nil {
+                if await Sequenzy.identifiedContact() != nil {
                     await Sequenzy.trackGeofenceTransition(
                         geofenceId: regionId, transition: transition, at: occurredAt)
                 }

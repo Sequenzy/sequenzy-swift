@@ -52,6 +52,18 @@ struct ContentView: View {
         NavigationStack {
             List {
                 if signedIn {
+                    // In-app placements: inline slots that collapse when empty.
+                    // The items draw their own card, so the rows are clear.
+                    Section("Home hero (SwiftUI)") {
+                        SequenzyPlacement("home_hero")
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                    }
+                    Section("Settings banner (UIKit)") {
+                        PlacementSlot(placementId: "settings_banner")
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                    }
                     Section {
                         Button("Log a workout") {
                             Sequenzy.track("workout_completed", properties: ["count": 3, "source": "ios-example"])
@@ -99,6 +111,7 @@ struct ContentView: View {
                 }
                 Text(status).foregroundStyle(.secondary)
             }
+            .environment(\.defaultMinListRowHeight, 0)
             .navigationTitle("Sequenzy example")
             .refreshable { await loadCards() }
         }
@@ -113,5 +126,31 @@ struct ContentView: View {
             }
             try? await Task.sleep(nanoseconds: 400_000_000)
         }
+    }
+}
+
+/// `SequenzyPlacementView` (UIKit) inside SwiftUI; apps with UIKit screens
+/// add it to a stack view directly.
+struct PlacementSlot: UIViewRepresentable {
+    let placementId: String
+
+    func makeUIView(context: Context) -> SequenzyPlacementView {
+        let view = SequenzyPlacementView(placementId: placementId)
+        view.setContentHuggingPriority(.required, for: .vertical)
+        return view
+    }
+
+    func updateUIView(_ view: SequenzyPlacementView, context: Context) {
+        view.placementId = placementId
+    }
+
+    @available(iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: SequenzyPlacementView, context: Context) -> CGSize? {
+        let width = proposal.width ?? UIScreen.main.bounds.width
+        let size = uiView.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel)
+        return CGSize(width: width, height: uiView.item == nil ? 0 : size.height)
     }
 }

@@ -262,6 +262,64 @@ final class SequenzyClientTests: XCTestCase {
         assertMatchesContract(transport.requests.last, "reportInAppEvent")
     }
 
+    func testPlacementsMatchTheContract() async throws {
+        transport.respond(
+            path: "/api/v1/in-app/feed/placements", status: 200,
+            json: String(decoding: try Contract.data("placements-response.json"), as: UTF8.self))
+        let client = makeClient()
+        await client.identify(email: email, identityToken: identityToken)
+
+        let placements = try await client.fetchPlacements(["home_hero", "checkout_upsell", "home_hero"])
+        assertMatchesContract(transport.requests(to: "/api/v1/in-app/feed/placements").last, "fetchPlacements")
+        let hero = try XCTUnwrap(placements["home_hero"])
+        XCTAssertEqual(hero.id, "iam_placement")
+        XCTAssertEqual(hero.kind, .card)
+        XCTAssertTrue(hero.isPlacement)
+        XCTAssertEqual(hero.placement, "home_hero")
+        XCTAssertEqual(hero.layout, .card)
+        XCTAssertNil(placements["checkout_upsell"])
+        let none = try await client.fetchPlacements([" "])
+        XCTAssertTrue(none.isEmpty)
+
+        let reported = await client.report(.displayed, messageId: "iam_placement")
+        XCTAssertTrue(reported)
+        assertMatchesContract(transport.requests.last, "reportPlacementDisplayed")
+    }
+
+    func testAMalformedPlacementItemEmptiesOnlyItsSlot() async throws {
+        let fixture = String(decoding: try Contract.data("placements-response.json"), as: UTF8.self)
+        let broken = fixture.replacingOccurrences(of: #""message": null"#, with: #""message": {"id": 1}"#)
+        transport.respond(path: "/api/v1/in-app/feed/placements", status: 200, json: broken)
+        let client = makeClient()
+        await client.identify(email: email, identityToken: identityToken)
+        let placements = try await client.fetchPlacements(["home_hero", "checkout_upsell"])
+        XCTAssertEqual(placements["home_hero"]?.id, "iam_placement")
+        XCTAssertNil(placements["checkout_upsell"])
+    }
+
+    func testDecodesPlacementLayoutsAndReadsUnknownOnesAsCard() throws {
+        let fixture = String(decoding: try Contract.data("placements-response.json"), as: UTF8.self)
+        struct Response: Decodable {
+            struct Entry: Decodable { let message: InAppMessage? }
+            let placements: [Entry]
+        }
+        for (raw, expected) in [("banner", InAppMessage.PlacementLayout.banner), ("hero", .hero), ("carousel", .card)] {
+            let json = fixture.replacingOccurrences(of: #""layout": "card""#, with: "\"layout\": \"\(raw)\"")
+            let decoded = try JSONDecoder().decode(Response.self, from: Data(json.utf8))
+            XCTAssertEqual(decoded.placements.first?.message?.layout, expected)
+        }
+    }
+
+        func testPlacementsWithoutIdentityThrow() async {
+        let client = makeClient()
+        do {
+            _ = try await client.fetchPlacements(["home_hero"])
+            XCTFail("expected notIdentified")
+        } catch {
+            XCTAssertEqual(error as? SequenzyError, .notIdentified)
+        }
+    }
+
     func testSendsThePushPermissionAndRegistersAgainWhenItChanges() async throws {
         final class Permission: @unchecked Sendable { var status: PushPermissionStatus = .denied }
         let permission = Permission()
@@ -653,4 +711,112 @@ final class JSONValueTests: XCTestCase {
         XCTAssertNil(parseHexColor("blue"))
         XCTAssertNil(parseHexColor("#12345"))
     }
+}
+
+final class IdentifyUserTests: XCTestCase {
+    var transport: FakeTransport!
+    var store: InMemoryStore!
+
+    override func setUp() {
+        transport = FakeTransport()
+        store = InMemoryStore()
+    }
+
+    func makeClient(
+        provider: IdentityTokenProvider? = nil, userProvider: UserIdentityTokenProvider? = nil
+    ) -> SequenzyClient {
+        let config = Contract.requests["config"] as! [String: String]
+        return SequenzyClient(
+            configuration: SequenzyConfiguration(
+                publicKey: config["publicKey"]!, companyId: config["companyId"]!,
+                appId: config["appId"]!, apiBaseURL: URL(string: config["apiBaseUrl"]!)!),
+            transport: transport, store: store,
+            identityTokenProvider: provider, userIdentityTokenProvider: userProvider, logLevel: .none,
+            sleep: { _ in try? await Task.sleep(nanoseconds: 60_000_000_000) })
+    }
+
+    let identityToken = "seq_wid_contract.token"
+
+    func testSendsTheExternalIdWithoutAnEmail() async throws {
+        let client = makeClient()
+        await client.track("opened")
+        await client.identifyUser(" user_123 ", identityToken: identityToken)
+        let request = try XCTUnwrap(transport.requests(to: "/api/v1/app-events").last)
+        let body = transport.json(request)
+        XCTAssertEqual(body["externalId"] as? String, "user_123")
+        XCTAssertNil(body["email"])
+        XCTAssertEqual(body["identityToken"] as? String, identityToken)
+        let externalId = await client.externalId
+        let email = await client.email
+        let contactKey = await client.contactKey
+        XCTAssertEqual(externalId, "user_123")
+        XCTAssertNil(email)
+        XCTAssertEqual(contactKey, "external user_123")
+    }
+
+    func testSendsBothIdentifiersWhenTheUserHasAnEmail() async throws {
+        let client = makeClient()
+        await client.identifyUser("user_123", email: "Jane@Example.com", identityToken: identityToken)
+        await client.track("opened")
+        let body = transport.json(try XCTUnwrap(transport.requests(to: "/api/v1/app-events").last))
+        XCTAssertEqual(body["externalId"] as? String, "user_123")
+        XCTAssertEqual(body["email"] as? String, "jane@example.com")
+    }
+
+    func testAsksTheUserProviderNeverTheEmailOne() async throws {
+        let emailCalls = CallCounter()
+        let userCalls = CallCounter()
+        let client = makeClient(
+            provider: { _ in
+                await emailCalls.increment()
+                return "seq_wid_email.token"
+            },
+            userProvider: { externalId, email in
+                await userCalls.increment()
+                XCTAssertNil(email)
+                return "seq_wid_user.\(externalId)"
+            })
+        await client.identifyUser("user_123")
+        await client.track("opened")
+        let body = transport.json(try XCTUnwrap(transport.requests(to: "/api/v1/app-events").last))
+        XCTAssertEqual(body["identityToken"] as? String, "seq_wid_user.user_123")
+        let emails = await emailCalls.value
+        let users = await userCalls.value
+        XCTAssertEqual(emails, 0)
+        XCTAssertEqual(users, 1)
+    }
+
+    func testAnotherUserIdDropsThePreviousUsersQueue() async {
+        let client = makeClient()
+        await client.identifyUser("user_1")
+        await client.track("for_user_1")
+        let queuedBefore = await client.queuedEventCount
+        XCTAssertEqual(queuedBefore, 1)
+        await client.identifyUser("user_2", identityToken: identityToken)
+        let queuedAfter = await client.queuedEventCount
+        XCTAssertEqual(queuedAfter, 0)
+    }
+
+    func testRejectsAnEmptyOrOverlongUserId() async {
+        let client = makeClient()
+        await client.identifyUser("   ", identityToken: identityToken)
+        await client.identifyUser(String(repeating: "x", count: 256), identityToken: identityToken)
+        let externalId = await client.externalId
+        XCTAssertNil(externalId)
+    }
+
+    func testResetForgetsTheExternalId() async {
+        let client = makeClient()
+        await client.identifyUser("user_123", identityToken: identityToken)
+        await client.reset()
+        let externalId = await client.externalId
+        let contactKey = await client.contactKey
+        XCTAssertNil(externalId)
+        XCTAssertNil(contactKey)
+    }
+}
+
+private actor CallCounter {
+    var value = 0
+    func increment() { value += 1 }
 }

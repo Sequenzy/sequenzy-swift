@@ -38,10 +38,10 @@
 
         /// After identify: another contact's messages go before they can act
         /// for the new one.
-        func signedIn(as email: String?) {
-            guard email != owner else { return }
+        func signedIn(as contact: String?) {
+            guard contact != owner else { return }
             dismissAll()
-            owner = email
+            owner = contact
         }
 
         func enqueue(_ messages: [InAppMessage], owner: String?) {
