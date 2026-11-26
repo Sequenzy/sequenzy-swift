@@ -1,0 +1,168 @@
+{
+  "description": "FCM data messages Sequenzy sends for Android Live Updates, built from the same snapshotted aps dictionary as the iOS push. Every SDK parses `messages[].data` into `expected`; `ignored` entries are not Live Updates. The server builds `data` from `aps` (packages/shared/src/services/push/push-live-updates-android.test.ts).",
+  "messages": [
+    {
+      "name": "start",
+      "activityId": "order-1234",
+      "aps": {
+        "timestamp": 1792000000,
+        "event": "start",
+        "content-state": { "status": "preparing", "progress": 10, "eta": "12:30" },
+        "attributes-type": "DeliveryAttributes",
+        "attributes": { "orderNumber": "1234", "sequenzy": { "activityId": "order-1234" } },
+        "alert": { "title": "Order confirmed", "body": "We're preparing it now." },
+        "stale-date": 1792003600,
+        "relevance-score": 50,
+        "input-push-token": 1
+      },
+      "updateToken": "6c1f0e0d5b0a4c3e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e",
+      "data": {
+        "sequenzyLiveUpdate": "1",
+        "event": "start",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": "1792000000",
+        "contentState": "{\"status\":\"preparing\",\"progress\":10,\"eta\":\"12:30\"}",
+        "attributes": "{\"orderNumber\":\"1234\"}",
+        "alertTitle": "Order confirmed",
+        "alertBody": "We're preparing it now.",
+        "staleDate": "1792003600",
+        "relevanceScore": "50",
+        "updateToken": "6c1f0e0d5b0a4c3e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e"
+      },
+      "expected": {
+        "event": "start",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": 1792000000,
+        "contentState": { "status": "preparing", "progress": 10, "eta": "12:30" },
+        "attributes": { "orderNumber": "1234" },
+        "alert": { "title": "Order confirmed", "body": "We're preparing it now." },
+        "staleDate": 1792003600,
+        "dismissalDate": null,
+        "relevanceScore": 50,
+        "updateToken": "6c1f0e0d5b0a4c3e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e"
+      }
+    },
+    {
+      "name": "update",
+      "activityId": "order-1234",
+      "aps": {
+        "timestamp": 1792000100,
+        "event": "update",
+        "content-state": { "status": "on the way", "progress": 60 }
+      },
+      "data": {
+        "sequenzyLiveUpdate": "1",
+        "event": "update",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": "1792000100",
+        "contentState": "{\"status\":\"on the way\",\"progress\":60}"
+      },
+      "expected": {
+        "event": "update",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": 1792000100,
+        "contentState": { "status": "on the way", "progress": 60 },
+        "attributes": null,
+        "alert": null,
+        "staleDate": null,
+        "dismissalDate": null,
+        "relevanceScore": null,
+        "updateToken": null
+      }
+    },
+    {
+      "name": "end",
+      "activityId": "order-1234",
+      "aps": {
+        "timestamp": 1792000200,
+        "event": "end",
+        "content-state": { "status": "delivered", "progress": 100 },
+        "alert": { "title": "Delivered" },
+        "dismissal-date": 1792000200
+      },
+      "data": {
+        "sequenzyLiveUpdate": "1",
+        "event": "end",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": "1792000200",
+        "contentState": "{\"status\":\"delivered\",\"progress\":100}",
+        "alertTitle": "Delivered",
+        "dismissalDate": "1792000200"
+      },
+      "expected": {
+        "event": "end",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": 1792000200,
+        "contentState": { "status": "delivered", "progress": 100 },
+        "attributes": null,
+        "alert": { "title": "Delivered", "body": null },
+        "staleDate": null,
+        "dismissalDate": 1792000200,
+        "relevanceScore": null,
+        "updateToken": null
+      }
+    }
+  ],
+  "ignored": [
+    {
+      "name": "regular push",
+      "data": {
+        "title": "Your order shipped",
+        "body": "Tap to track it",
+        "pushSendId": "push_abc",
+        "deviceId": "dev_123",
+        "clickToken": "Qm9vYmFy",
+        "eventsUrl": "https://api.sequenzy.com/api/v1/push/events"
+      }
+    },
+    {
+      "name": "unknown event",
+      "data": {
+        "sequenzyLiveUpdate": "1",
+        "event": "pause",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": "1792000000",
+        "contentState": "{}"
+      }
+    },
+    {
+      "name": "content state is not a JSON object",
+      "data": {
+        "sequenzyLiveUpdate": "1",
+        "event": "update",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "timestamp": "1792000000",
+        "contentState": "[1,2]"
+      }
+    },
+    {
+      "name": "missing timestamp",
+      "data": {
+        "sequenzyLiveUpdate": "1",
+        "event": "update",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "contentState": "{}"
+      }
+    },
+    {
+      "name": "invalid activity id",
+      "data": {
+        "sequenzyLiveUpdate": "1",
+        "event": "update",
+        "activityType": "DeliveryAttributes",
+        "activityId": "-bad id",
+        "timestamp": "1792000000",
+        "contentState": "{}"
+      }
+    }
+  ]
+}

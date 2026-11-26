@@ -1,0 +1,11 @@
+{
+  "v": "1",
+  "title": "Your order shipped",
+  "body": "Tap to track it",
+  "url": "myapp://orders/123",
+  "imageUrl": "https://cdn.example.com/box.png",
+  "pushSendId": "push_abc",
+  "deviceId": "dev_123",
+  "clickToken": "Qm9vYmFy",
+  "eventsUrl": "https://api.sequenzy.com/api/v1/push/events"
+}

@@ -111,12 +111,19 @@ final class Clock: @unchecked Sendable {
 }
 
 enum Contract {
-    static let directory = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()  // SequenzyCoreTests
-        .deletingLastPathComponent()  // Tests
-        .deletingLastPathComponent()  // swift
-        .deletingLastPathComponent()  // mobile-sdks
-        .appendingPathComponent("contract/fixtures")
+    static let directory: URL = {
+        let swiftRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // SequenzyCoreTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // swift
+        let monorepo = swiftRoot
+            .deletingLastPathComponent()  // mobile-sdks
+            .appendingPathComponent("contract/fixtures")
+        if FileManager.default.fileExists(atPath: monorepo.path) {
+            return monorepo
+        }
+        return swiftRoot.appendingPathComponent("contract/fixtures")
+    }()
 
     static func data(_ name: String) throws -> Data {
         try Data(contentsOf: directory.appendingPathComponent(name))
@@ -284,6 +291,22 @@ final class SequenzyClientTests: XCTestCase {
         let reported = await client.report(.displayed, messageId: "iam_placement")
         XCTAssertTrue(reported)
         assertMatchesContract(transport.requests.last, "reportPlacementDisplayed")
+    }
+
+    func testInvalidPlacementKeysAreDroppedBeforeBatching() async throws {
+        transport.respond(
+            path: "/api/v1/in-app/feed/placements", status: 200,
+            json: String(decoding: try Contract.data("placements-response.json"), as: UTF8.self))
+        let client = makeClient()
+        await client.identify(email: email, identityToken: identityToken)
+
+        let placements = try await client.fetchPlacements(["HomeHero", "home_hero", "bad key!"])
+        let sent = transport.requests(to: "/api/v1/in-app/feed/placements").last.map { transport.json($0) }
+        XCTAssertEqual(sent?["placements"] as? [String], ["home_hero"])
+        XCTAssertEqual(placements["home_hero"]?.id, "iam_placement")
+        let empty = try await client.fetchPlacements(["HomeHero", "bad key!"])
+        XCTAssertTrue(empty.isEmpty)
+        XCTAssertEqual(transport.requests(to: "/api/v1/in-app/feed/placements").count, 1)
     }
 
     func testAMalformedPlacementItemEmptiesOnlyItsSlot() async throws {
@@ -642,6 +665,54 @@ final class SequenzyClientTests: XCTestCase {
         XCTAssertEqual(queued, 2)
     }
 
+    func testTransientProviderFailureAfterRejectionRecoversAfterCooldown() async {
+        struct Down: Error {}
+        let calls = Counter()
+        transport.respond { request in
+            guard request.url.path == "/api/v1/app-events" else { return nil }
+            let token = self.transport.json(request)["identityToken"] as? String
+            if token == "seq_wid_recovered" { return nil }
+            return SequenzyHTTPResponse(status: 403, body: Data(#"{"success":false,"code":"invalid_web_tracking_identity"}"#.utf8))
+        }
+        let client = makeClient(provider: { _ in
+            calls.increment()
+            if calls.value == 1 { throw Down() }
+            return "seq_wid_recovered"
+        })
+        await client.identify(email: email, identityToken: "seq_wid_expired")
+        await client.track("a")
+        XCTAssertEqual(calls.value, 1)
+        var queued = await client.queuedEventCount
+        XCTAssertEqual(queued, 1)
+
+        await client.flush()
+        XCTAssertEqual(calls.value, 1)
+
+        clock.advance(SequenzyClient.providerRetryInterval + 1)
+        await client.flush()
+        XCTAssertEqual(calls.value, 2)
+        queued = await client.queuedEventCount
+        XCTAssertEqual(queued, 0)
+        let sent = transport.requests(to: "/api/v1/app-events").last.map { transport.json($0) }
+        XCTAssertEqual(sent?["identityToken"] as? String, "seq_wid_recovered")
+    }
+
+    func testAttachingProviderAfterRejectionUnblocksFlushing() async {
+        transport.respond(path: "/api/v1/app-events", status: 403, json: #"{"code":"invalid_web_tracking_identity"}"#, times: 1)
+        let client = makeClient()
+        await client.identify(email: email, identityToken: "seq_wid_expired")
+        await client.track("blocked")
+        var queued = await client.queuedEventCount
+        XCTAssertEqual(queued, 1)
+
+        await client.setIdentityTokenProvider { _ in "seq_wid_attached" }
+        await client.flush()
+        queued = await client.queuedEventCount
+        XCTAssertEqual(queued, 0)
+        let sent = transport.requests(to: "/api/v1/app-events").last.map { transport.json($0) }
+        XCTAssertEqual(sent?["identityToken"] as? String, "seq_wid_attached")
+    }
+
     func testEventsThatCannotBeSentAreDroppedAtTrack() async {
         let client = makeClient()
         await client.identify(email: email, identityToken: identityToken)
@@ -813,6 +884,63 @@ final class IdentifyUserTests: XCTestCase {
         let contactKey = await client.contactKey
         XCTAssertNil(externalId)
         XCTAssertNil(contactKey)
+    }
+
+    @MainActor
+    func testCommandQueueOrdersAwaitedFetchesBehindFireAndForgetIdentify() async throws {
+        let client = makeClient()
+        let queue = SequenzyCommandQueue()
+        transport.respond(
+            path: "/api/v1/in-app/feed", status: 200,
+            json: String(decoding: try Contract.data("feed-response.json"), as: UTF8.self))
+
+        queue.enqueue {
+            await client.identify(email: "jane@example.com", identityToken: self.identityToken)
+        }
+        let cards = try await queue.enqueueAndWait {
+            try await client.fetchFeed(kind: .card)
+        }
+        XCTAssertFalse(cards.isEmpty)
+        let identified = await queue.enqueueAndWait {
+            await client.email
+        }
+        XCTAssertEqual(identified, "jane@example.com")
+
+        queue.enqueue {
+            await client.report(.clicked, messageId: "iam_card")
+        }
+        queue.enqueue {
+            await client.reset()
+        }
+        let afterReset = await queue.enqueueAndWait {
+            await client.contactKey
+        }
+        XCTAssertNil(afterReset)
+        let eventRequest = try XCTUnwrap(transport.requests(to: "/api/v1/in-app/feed/events").last)
+        XCTAssertEqual(transport.json(eventRequest)["email"] as? String, "jane@example.com")
+    }
+
+    @MainActor
+    func testCommandQueuePropagatesErrorsWithoutStallingSubsequentCommands() async {
+        let client = makeClient()
+        let queue = SequenzyCommandQueue()
+
+        do {
+            _ = try await queue.enqueueAndWait {
+                try await client.fetchFeed(kind: .card)
+            }
+            XCTFail("expected notIdentified")
+        } catch let error as SequenzyError {
+            XCTAssertEqual(error, .notIdentified)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        queue.enqueue {
+            await client.identify(email: "jane@example.com", identityToken: self.identityToken)
+        }
+        let email = await queue.enqueueAndWait { await client.email }
+        XCTAssertEqual(email, "jane@example.com")
     }
 }
 

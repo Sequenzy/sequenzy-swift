@@ -58,6 +58,9 @@
             NotificationCenter.default.addObserver(
                 self, selector: #selector(appDidBecomeActive),
                 name: UIApplication.didBecomeActiveNotification, object: nil)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(didReset),
+                name: Sequenzy.didResetNotification, object: nil)
             if isEnabled, isStale { refresh() }
         }
 
@@ -119,6 +122,10 @@
 
         @objc private func appDidBecomeActive() {
             if isEnabled, isStale { refresh() }
+        }
+
+        @objc private func didReset() {
+            disable()
         }
 
         private var registered: [GeofenceRegion] {

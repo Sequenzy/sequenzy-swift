@@ -30,6 +30,7 @@
         private static let handlerName = "sequenzy"
 
         private let message: InAppMessage
+        private let isForSignedInContact: () -> Bool
         private let onLoaded: () -> Void
         private let onFinish: (Outcome) -> Void
         private var webView: WKWebView?
@@ -38,8 +39,14 @@
         private var bridgeCalls = 0
         private var timeout: Timer?
 
-        init(message: InAppMessage, onLoaded: @escaping () -> Void, onFinish: @escaping (Outcome) -> Void) {
+        init(
+            message: InAppMessage,
+            isForSignedInContact: @escaping () -> Bool,
+            onLoaded: @escaping () -> Void,
+            onFinish: @escaping (Outcome) -> Void
+        ) {
             self.message = message
+            self.isForSignedInContact = isForSignedInContact
             self.onLoaded = onLoaded
             self.onFinish = onFinish
             super.init(nibName: nil, bundle: nil)
@@ -137,6 +144,11 @@
             else { return }
             bridgeCalls += 1
             guard bridgeCalls <= InAppHtmlBridgeMessage.maxCallsPerDisplay else { return }
+            // Fetched for a contact who is no longer signed in: close, unreported.
+            guard isForSignedInContact() else {
+                finish(.failed)
+                return
+            }
             switch call {
             case .close:
                 finish(.dismissed)
@@ -158,6 +170,10 @@
         fileprivate func open(_ raw: String, buttonId: String?) {
             guard InAppHtmlBridgeMessage.isAllowedUrl(raw), let url = URL(string: raw) else {
                 print("[Sequenzy] In-app message link blocked: \(raw)")
+                return
+            }
+            guard isForSignedInContact() else {
+                finish(.failed)
                 return
             }
             Sequenzy.reportFromPresenter(.clicked, messageId: message.id, buttonId: buttonId)

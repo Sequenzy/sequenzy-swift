@@ -35,17 +35,22 @@
         private static var pollTimer: Timer?
         static var showsInAppMessagesAutomatically = true
 
-        typealias Command = @MainActor @Sendable () async -> Void
-        private static var commands: AsyncStream<Command>.Continuation?
+        typealias Command = SequenzyCommandQueue.Command
+        private static var commandQueue: SequenzyCommandQueue?
 
-        /// identify, reset, track, push registration and feed refreshes run
+        /// identify, reset, track, push registration, reports and feed fetches run
         /// one at a time in call order: `track(x); reset()` records x for the
-        /// signed-in user, and `reset(); identify(b)` leaves b signed in.
+        /// signed-in user, `identify(a); await fetchCards()` fetches a's cards,
+        /// and `reset(); identify(b)` leaves b signed in.
         static func enqueue(_ command: @escaping Command) {
-            commands?.yield(command)
+            commandQueue?.enqueue(command)
         }
 
         public static weak var inAppDelegate: SequenzyInAppDelegate?
+
+        /// Posted on the main actor after `reset()` clears the contact so
+        /// companion modules such as `SequenzyGeofences` stop monitoring.
+        public static let didResetNotification = Notification.Name("com.sequenzy.didReset")
 
         /// How often the feed is fetched while the app is in the foreground.
         public static var feedRefreshInterval: TimeInterval = 60
@@ -95,11 +100,7 @@
             client = newClient
             showsInAppMessagesAutomatically = showInAppMessages
             presenter = InAppPresenter()
-            let (stream, continuation) = AsyncStream<Command>.makeStream()
-            commands = continuation
-            Task { @MainActor in
-                for await command in stream { await command() }
-            }
+            commandQueue = SequenzyCommandQueue()
             // First in the queue, so the first registration and feed fetch
             // already report permission and ask for push primers.
             enqueue { await newClient.setPushPermissionReader { await currentPushPermission() } }
@@ -122,7 +123,7 @@
                 let signedIn = await client.contactKey
                 presenter?.signedIn(as: signedIn)
                 SequenzyPlacements.shared.identityChanged(email: signedIn)
-                await refreshMessages(force: true)
+                await runRefreshMessages(force: true)
             }
         }
 
@@ -137,7 +138,7 @@
                 let signedIn = await client.contactKey
                 presenter?.signedIn(as: signedIn)
                 SequenzyPlacements.shared.identityChanged(email: signedIn)
-                await refreshMessages(force: true)
+                await runRefreshMessages(force: true)
             }
         }
 
@@ -154,6 +155,7 @@
                 // previous user's messages back.
                 presenter?.dismissAll()
                 SequenzyPlacements.shared.identityChanged(email: nil)
+                NotificationCenter.default.post(name: didResetNotification, object: nil)
             }
         }
 
@@ -301,7 +303,7 @@
                 let payload = PushPayload.parse(userInfo: response.notification.request.content.userInfo)
             else { return false }
             if let client {
-                Task { await client.reportPush(.clicked, payload: payload) }
+                enqueue { await client.reportPush(.clicked, payload: payload) }
             }
             if let raw = payload.url, let url = URL(string: raw) {
                 open(url, from: nil)
@@ -321,6 +323,13 @@
         /// Fetches open messages and shows the next one unless the app opted
         /// out of automatic display.
         public static func refreshMessages(force: Bool = false) async {
+            guard let queue = commandQueue else { return }
+            await queue.enqueueAndWait {
+                await runRefreshMessages(force: force)
+            }
+        }
+
+        private static func runRefreshMessages(force: Bool = false) async {
             guard let client, showsInAppMessagesAutomatically else { return }
             // 90%: a poll timer firing on the interval must not lose a cycle
             // to a fetch that ran a moment after it was scheduled.
@@ -336,21 +345,25 @@
         /// Open in-app messages, for apps that present them themselves.
         /// Custom HTML messages are included only with `includeHtml`.
         public static func fetchMessages(includeHtml: Bool = false) async throws -> [InAppMessage] {
-            guard let client = requireClient() else { throw SequenzyError.notIdentified }
-            return try await client.fetchFeed(
-                kind: .message, formats: includeHtml ? [.modal, .banner, .fullscreen, .html] : nil)
+            guard let client = requireClient(), let queue = commandQueue else { throw SequenzyError.notIdentified }
+            return try await queue.enqueueAndWait {
+                try await client.fetchFeed(
+                    kind: .message, formats: includeHtml ? [.modal, .banner, .fullscreen, .html] : nil)
+            }
         }
 
         /// Content cards for an inbox or feed screen, pinned cards first.
         public static func fetchCards(limit: Int? = nil) async throws -> [InAppMessage] {
-            guard let client = requireClient() else { throw SequenzyError.notIdentified }
-            return try await client.fetchFeed(kind: .card, limit: limit)
+            guard let client = requireClient(), let queue = commandQueue else { throw SequenzyError.notIdentified }
+            return try await queue.enqueueAndWait {
+                try await client.fetchFeed(kind: .card, limit: limit)
+            }
         }
 
         /// Reports an event for a message or card you render yourself.
         public static func report(_ type: InAppEventType, for message: InAppMessage) {
             guard let client = requireClient() else { return }
-            Task { await client.report(type, messageId: message.id) }
+            enqueue { await client.report(type, messageId: message.id) }
         }
 
         /// Reports the click and performs the button's action: opens its URL,
@@ -370,7 +383,7 @@
             guard let client = requireClient() else { return }
             Task { @MainActor in
                 let status = await requestPushPermission()
-                await client.report(.clicked, messageId: messageId, pushPermission: status)
+                enqueue { await client.report(.clicked, messageId: messageId, pushPermission: status) }
             }
         }
 
@@ -379,21 +392,25 @@
         /// The identified contact's email, or nil (also for a user identified
         /// by external ID only).
         public static func identifiedEmail() async -> String? {
-            await client?.email
+            guard let client, let queue = commandQueue else { return nil }
+            return await queue.enqueueAndWait { await client.email }
         }
 
         /// One string per identified contact (see `SequenzyClient.contactKey`),
         /// or nil while anonymous. Geofencing runs only while it is set.
         public static func identifiedContact() async -> String? {
-            await client?.contactKey
+            guard let client, let queue = commandQueue else { return nil }
+            return await queue.enqueueAndWait { await client.contactKey }
         }
 
         /// The nearest geofences around a position. `SequenzyGeofences` calls
         /// this; apps with their own location stack can too. The position is
         /// rounded to about 1 km before it is sent.
         public static func fetchNearbyGeofences(latitude: Double, longitude: Double, limit: Int) async throws -> NearbyGeofences {
-            guard let client = requireClient() else { throw SequenzyError.notIdentified }
-            return try await client.fetchNearbyGeofences(latitude: latitude, longitude: longitude, limit: limit)
+            guard let client = requireClient(), let queue = commandQueue else { throw SequenzyError.notIdentified }
+            return try await queue.enqueueAndWait {
+                try await client.fetchNearbyGeofences(latitude: latitude, longitude: longitude, limit: limit)
+            }
         }
 
         /// Reports a geofence enter or exit and waits until it is sent or
@@ -403,15 +420,17 @@
         public static func trackGeofenceTransition(
             geofenceId: String, transition: GeofenceTransition, at date: Date? = nil
         ) async -> Bool {
-            guard let client = requireClient() else { return false }
-            return await client.trackGeofenceTransition(geofenceId: geofenceId, transition: transition, at: date)
+            guard let client = requireClient(), let queue = commandQueue else { return false }
+            return await queue.enqueueAndWait {
+                await client.trackGeofenceTransition(geofenceId: geofenceId, transition: transition, at: date)
+            }
         }
 
         // MARK: Internals
 
         static func reportFromPresenter(_ type: InAppEventType, messageId: String, buttonId: String? = nil) {
             guard let client else { return }
-            Task { await client.report(type, messageId: messageId, buttonId: buttonId) }
+            enqueue { await client.report(type, messageId: messageId, buttonId: buttonId) }
         }
 
         static func open(_ url: URL, from message: InAppMessage?) {
@@ -448,7 +467,7 @@
                             }
                             await client.flush()
                             await client.registerPushIfNeeded()
-                            await Sequenzy.refreshMessages()
+                            await Sequenzy.runRefreshMessages()
                             SequenzyPlacements.shared.didBecomeActive()
                         }
                     }
@@ -465,7 +484,7 @@
         private static func startPolling() {
             guard pollTimer == nil, feedRefreshInterval > 0 else { return }
             pollTimer = Timer.scheduledTimer(withTimeInterval: feedRefreshInterval, repeats: true) { _ in
-                Task { @MainActor in Sequenzy.enqueue { await Sequenzy.refreshMessages() } }
+                Task { @MainActor in Sequenzy.enqueue { await Sequenzy.runRefreshMessages() } }
             }
         }
 

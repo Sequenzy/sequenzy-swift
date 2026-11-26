@@ -96,10 +96,16 @@
                 // fails to load stays in the feed for a later launch. Until
                 // then the window takes no touches, so the app underneath
                 // stays usable while nothing is visible.
+                let messageOwner = owner
+                let stillOwner: () -> Bool = { [weak self] in
+                    self?.owner == messageOwner && self?.current?.id == message.id
+                }
                 window.isUserInteractionEnabled = false
                 window.rootViewController = InAppHtmlViewController(
                     message: message,
+                    isForSignedInContact: stillOwner,
                     onLoaded: { [weak window] in
+                        guard stillOwner() else { return }
                         window?.isUserInteractionEnabled = true
                         Sequenzy.reportFromPresenter(.displayed, messageId: message.id)
                     },
@@ -128,7 +134,8 @@
                 // document asked to open the link.
                 Sequenzy.open(url, from: message)
             case .failed:
-                break
+                // Keep failed loads eligible for the next feed refresh.
+                shownIds.remove(message.id)
             }
             hide()
             showNextIfIdle()

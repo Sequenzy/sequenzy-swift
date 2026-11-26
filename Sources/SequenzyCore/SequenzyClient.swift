@@ -1,6 +1,6 @@
 import Foundation
 
-public let sequenzySDKVersion = "0.1.3"
+public let sequenzySDKVersion = "0.1.4"
 
 public struct SequenzyConfiguration: Sendable {
     public static let defaultAPIBaseURL = URL(string: "https://api.sequenzy.com")!
@@ -199,11 +199,19 @@ public actor SequenzyClient {
 
     public func setIdentityTokenProvider(_ provider: IdentityTokenProvider?) {
         identityTokenProvider = provider
+        if provider != nil {
+            identityBlocked = false
+            providerRetryAt = nil
+        }
     }
 
     /// Fresh tokens for users identified with `identifyUser`.
     public func setUserIdentityTokenProvider(_ provider: UserIdentityTokenProvider?) {
         userIdentityTokenProvider = provider
+        if provider != nil {
+            identityBlocked = false
+            providerRetryAt = nil
+        }
     }
 
     public func setLogLevel(_ level: SequenzyLogLevel) {
@@ -992,15 +1000,39 @@ public actor SequenzyClient {
     /// Placement keys one request can ask for.
     public static let maxPlacementsPerRequest = 10
 
+    /// Must match `IN_APP_PLACEMENT_KEY_PATTERN` on the API (`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+    /// so one invalid key never triggers a 400 that drops sibling placements in the batch.
+    public static func isValidPlacementKey(_ key: String) -> Bool {
+        let bytes = Array(key.utf8)
+        guard !bytes.isEmpty, bytes.count <= 64 else { return false }
+        let first = bytes[0]
+        let isFirstValid = (first >= 0x61 && first <= 0x7A) || (first >= 0x30 && first <= 0x39)
+        guard isFirstValid else { return false }
+        for byte in bytes.dropFirst() {
+            let valid = (byte >= 0x61 && byte <= 0x7A)
+                || (byte >= 0x30 && byte <= 0x39)
+                || byte == 0x5F || byte == 0x2E || byte == 0x2D
+            if !valid { return false }
+        }
+        return true
+    }
+
     /// What each placement shows the identified contact: its highest-priority
     /// open item. Keys missing from the result have nothing to show, so their
     /// slots collapse. Up to `maxPlacementsPerRequest` keys.
     public func fetchPlacements(_ placements: [String]) async throws -> [String: InAppMessage] {
         var seen = Set<String>()
-        let keys = placements
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
-            .prefix(Self.maxPlacementsPerRequest)
+        var keys: [String] = []
+        for raw in placements {
+            let key = raw.trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            guard Self.isValidPlacementKey(key) else {
+                log(.error, "Ignoring invalid placement key \"\(key)\": use 1-64 lowercase letters, numbers, dots, dashes or underscores")
+                continue
+            }
+            keys.append(key)
+            if keys.count >= Self.maxPlacementsPerRequest { break }
+        }
         guard !keys.isEmpty else { return [:] }
         let includePushPrimers = handlesPushPermission
         let result = await withIdentity { identity, token in
@@ -1125,6 +1157,13 @@ public actor SequenzyClient {
         case failed(Error)
     }
 
+    private enum ProviderTokenResult {
+        case token(String)
+        case retryLater
+        case unavailable
+        case userChanged
+    }
+
     /// Runs `operation` with the stored identifiers and identity token,
     /// fetching a token from the provider when none is stored, and once more
     /// when the server rejects the stored one.
@@ -1136,8 +1175,15 @@ public actor SequenzyClient {
         var usedProvider = false
         var token = store.string(forKey: Key.identityToken)
         if token == nil {
-            token = await tokenFromProvider()
             usedProvider = true
+            switch await tokenFromProvider() {
+            case .token(let fresh):
+                token = fresh
+            case .userChanged:
+                return .userChanged
+            case .retryLater, .unavailable:
+                token = nil
+            }
         }
         guard var current = token else {
             log(.info, "No identity token yet; pass one to identify or identifyUser, or set an identity token provider")
@@ -1157,10 +1203,19 @@ public actor SequenzyClient {
             guard contactKey == contact, identityFields == identity else { return .userChanged }
 
             store.set(nil, forKey: Key.identityToken)
-            if !usedProvider, let fresh = await tokenFromProvider() {
+            if !usedProvider {
                 usedProvider = true
-                current = fresh
-                continue
+                switch await tokenFromProvider() {
+                case .token(let fresh):
+                    current = fresh
+                    continue
+                case .retryLater:
+                    return .notIdentified
+                case .userChanged:
+                    return .userChanged
+                case .unavailable:
+                    break
+                }
             }
             identityBlocked = true
             log(.error, "The identity token was rejected; call identify or identifyUser again with a fresh token")
@@ -1171,7 +1226,7 @@ public actor SequenzyClient {
     /// A fresh token for the current identity: from the user identity token
     /// provider for a user identified by external ID, otherwise from the
     /// identity token provider with the email.
-    private func tokenFromProvider() async -> String? {
+    private func tokenFromProvider() async -> ProviderTokenResult {
         let contact = contactKey
         let identity = identityFields
         let request: (@Sendable () async throws -> String)?
@@ -1183,8 +1238,8 @@ public actor SequenzyClient {
         } else {
             request = nil
         }
-        guard let request else { return nil }
-        if let providerRetryAt, providerRetryAt > now() { return nil }
+        guard let request else { return .unavailable }
+        if let providerRetryAt, providerRetryAt > now() { return .retryLater }
         do {
             // Calls run in order, so a provider that never returns would stall
             // every later call without the timeout.
@@ -1200,13 +1255,16 @@ public actor SequenzyClient {
             }
             // The actor can run an identify while the provider is pending: a
             // token minted for other identifiers must not replace the new one.
-            guard !token.isEmpty, contactKey == contact, identityFields == identity else { return nil }
+            guard contactKey == contact, identityFields == identity else { return .userChanged }
+            guard !token.isEmpty else { return .unavailable }
             store.set(token, forKey: Key.identityToken)
-            return token
+            identityBlocked = false
+            providerRetryAt = nil
+            return .token(token)
         } catch {
             providerRetryAt = now().addingTimeInterval(Self.providerRetryInterval)
             log(.error, "The identity token provider failed: \(error); retrying in a minute")
-            return nil
+            return .retryLater
         }
     }
 

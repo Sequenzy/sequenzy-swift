@@ -1,0 +1,448 @@
+{
+  "config": {
+    "publicKey": "seq_pk_contract",
+    "companyId": "company_1",
+    "appId": "com.example.app",
+    "apiBaseUrl": "https://api.example.com"
+  },
+  "identity": {
+    "email": "jane@example.com",
+    "identityToken": "seq_wid_contract.token"
+  },
+  "headers": {
+    "content-type": "application/json",
+    "x-sequenzy-key": "seq_pk_contract",
+    "x-sequenzy-app-id": "com.example.app"
+  },
+  "dynamicFields": {
+    "anonymousId": "Stable per installation until reset(); any non-empty string up to 128 characters",
+    "eventId": "Unique per tracked event, generated once and reused on every retry",
+    "occurredAt": "ISO 8601 time the event was tracked"
+  },
+  "requests": [
+    {
+      "name": "registerAnonymousDevice",
+      "description": "Push token arrives before identify()",
+      "method": "POST",
+      "path": "/api/v1/push/app-devices",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "platform": "ios",
+        "token": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+      },
+      "dynamicBodyFields": ["anonymousId"],
+      "optionalBodyFields": ["appVersion", "osVersion", "deviceName", "locale", "timezone", "permission"],
+      "absentBodyFields": ["email", "identityToken"]
+    },
+    {
+      "name": "registerIdentifiedDevice",
+      "description": "Push token re-registered after identify() links the device",
+      "method": "POST",
+      "path": "/api/v1/push/app-devices",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "platform": "ios",
+        "token": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token"
+      },
+      "dynamicBodyFields": ["anonymousId"],
+      "optionalBodyFields": ["appVersion", "osVersion", "deviceName", "locale", "timezone", "permission"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "registerDeviceWithPermission",
+      "description": "SDKs that can read notification permission send it with every registration (granted, provisional, ephemeral, denied or not_determined), and register again when it changes",
+      "method": "POST",
+      "path": "/api/v1/push/app-devices",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "platform": "ios",
+        "token": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "permission": "denied"
+      },
+      "dynamicBodyFields": ["anonymousId"],
+      "optionalBodyFields": ["appVersion", "osVersion", "deviceName", "locale", "timezone"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "removeDevice",
+      "description": "reset() unlinks the device before forgetting the user",
+      "method": "POST",
+      "path": "/api/v1/push/app-devices/remove",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "platform": "ios",
+        "token": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": [],
+      "absentBodyFields": ["email", "identityToken"]
+    },
+    {
+      "name": "registerLiveActivityPushToStart",
+      "description": "iOS 17.2+ reports a push-to-start token for an ActivityAttributes type before identify()",
+      "method": "POST",
+      "path": "/api/v1/push/live-activities",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "kind": "push_to_start",
+        "activityType": "DeliveryAttributes",
+        "token": "f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a59687"
+      },
+      "dynamicBodyFields": ["anonymousId"],
+      "optionalBodyFields": ["appVersion", "osVersion", "deviceToken"],
+      "absentBodyFields": ["email", "identityToken", "activityId"]
+    },
+    {
+      "name": "registerLiveActivityUpdate",
+      "description": "A running activity reports its update token, tagged with attributes.sequenzy.activityId, for the identified contact",
+      "method": "POST",
+      "path": "/api/v1/push/live-activities",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "kind": "update",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "token": "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token"
+      },
+      "dynamicBodyFields": ["anonymousId"],
+      "optionalBodyFields": ["appVersion", "osVersion", "deviceToken"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "endLiveActivity",
+      "description": "The activity ended or was dismissed on the device",
+      "method": "POST",
+      "path": "/api/v1/push/live-activities/remove",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "token": "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": [],
+      "absentBodyFields": ["email", "identityToken", "unlinkSubscriber"]
+    },
+    {
+      "name": "registerLiveUpdatePushToStart",
+      "description": "Android: observeLiveUpdates reports the SDK-generated push-to-start token for an activity type, linked to the FCM device, before identify()",
+      "method": "POST",
+      "path": "/api/v1/push/live-activities",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "platform": "android",
+        "kind": "push_to_start",
+        "activityType": "DeliveryAttributes",
+        "deviceToken": "fcm_contract_token"
+      },
+      "dynamicBodyFields": ["anonymousId", "token"],
+      "optionalBodyFields": ["appVersion", "osVersion"],
+      "absentBodyFields": ["email", "identityToken", "activityId"]
+    },
+    {
+      "name": "registerLiveUpdateActivity",
+      "description": "Android: a shown Live Update reports its update token (the one the start push carried, or one the SDK generated for a local start) for the identified contact",
+      "method": "POST",
+      "path": "/api/v1/push/live-activities",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "platform": "android",
+        "kind": "update",
+        "activityType": "DeliveryAttributes",
+        "activityId": "order-1234",
+        "token": "6c1f0e0d5b0a4c3e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e",
+        "deviceToken": "fcm_contract_token",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token"
+      },
+      "dynamicBodyFields": ["anonymousId"],
+      "optionalBodyFields": ["appVersion", "osVersion"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "trackEvents",
+      "description": "track(\"workout_completed\", { minutes: 30 }) while identified",
+      "method": "POST",
+      "path": "/api/v1/app-events",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "events": [
+          {
+            "name": "workout_completed",
+            "properties": {
+              "minutes": 30
+            }
+          }
+        ]
+      },
+      "dynamicBodyFields": ["events[].eventId", "events[].occurredAt"],
+      "optionalBodyFields": [],
+      "absentBodyFields": []
+    },
+    {
+      "name": "fetchFeed",
+      "description": "Open in-app messages for the identified contact",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "kind": "message"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": ["limit", "formats", "actions"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "fetchFeedWithPushPrimers",
+      "description": "SDKs that can ask for notification permission list request_push_permission in actions; without it the feed leaves push primers out",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "kind": "message",
+        "actions": ["request_push_permission"]
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": ["limit"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "reportInAppEvent",
+      "description": "The modal from feed-response.json was shown",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed/events",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "messageId": "iam_modal",
+        "type": "displayed"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": ["pushPermission"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "reportPushPrimerClicked",
+      "description": "Tapping a request_push_permission button asks for permission, then reports the click with the permission read afterwards",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed/events",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "messageId": "iam_primer",
+        "type": "clicked",
+        "pushPermission": "granted"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": [],
+      "absentBodyFields": []
+    },
+    {
+      "name": "fetchFeedWithHtml",
+      "description": "Automatic display on an SDK that renders custom HTML messages: it lists every format it draws, html included",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "kind": "message",
+        "formats": ["modal", "banner", "fullscreen", "html"]
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": ["limit"],
+      "absentBodyFields": []
+    },
+    {
+      "name": "reportInAppHtmlClick",
+      "description": "The custom HTML message from feed-response-html.json called brazeBridge.logClick(\"0\")",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed/events",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "messageId": "iam_html",
+        "type": "clicked",
+        "buttonId": "0"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": [],
+      "absentBodyFields": []
+    },
+    {
+      "name": "fetchPlacements",
+      "description": "A placement view asks what its placements show the identified contact; SDKs list the button actions they handle, as for the feed",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed/placements",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "placements": ["home_hero", "checkout_upsell"]
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": ["actions"],
+      "absentBodyFields": ["kind", "formats"]
+    },
+    {
+      "name": "reportPlacementDisplayed",
+      "description": "The home_hero item from placements-response.json was shown (web: half visible; mobile: added to the screen); placement items report through the feed events endpoint, once per item per app session",
+      "method": "POST",
+      "path": "/api/v1/in-app/feed/events",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "messageId": "iam_placement",
+        "type": "displayed"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": [],
+      "absentBodyFields": []
+    },
+    {
+      "name": "reportPushClicked",
+      "description": "The notification from push-payload-apns.json was tapped; posted to its eventsUrl",
+      "method": "POST",
+      "url": "https://api.sequenzy.com/api/v1/push/events",
+      "body": {
+        "pushSendId": "push_abc",
+        "deviceId": "dev_123",
+        "token": "Qm9vYmFy",
+        "type": "clicked"
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": [],
+      "absentBodyFields": ["publicKey", "companyId"]
+    },
+    {
+      "name": "fetchNearbyGeofences",
+      "description": "Nearest geofences around the device, position rounded to 2 decimals, limit = region slots minus the refresh region",
+      "method": "POST",
+      "path": "/api/v1/geofences/nearby",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "latitude": 51.51,
+        "longitude": -0.14,
+        "limit": 19
+      },
+      "dynamicBodyFields": [],
+      "optionalBodyFields": [],
+      "absentBodyFields": ["name", "properties"]
+    },
+    {
+      "name": "trackGeofenceTransition",
+      "description": "The OS reported the device entering geofence geo_1; sent through the event queue like track()",
+      "method": "POST",
+      "path": "/api/v1/app-events",
+      "body": {
+        "companyId": "company_1",
+        "publicKey": "seq_pk_contract",
+        "email": "jane@example.com",
+        "identityToken": "seq_wid_contract.token",
+        "events": [
+          {
+            "type": "geofence",
+            "name": "geofence",
+            "transition": "enter",
+            "geofenceId": "geo_1",
+            "properties": {}
+          }
+        ]
+      },
+      "dynamicBodyFields": ["events[].eventId", "events[].occurredAt"],
+      "optionalBodyFields": [],
+      "absentBodyFields": []
+    }
+  ],
+  "responses": {
+    "identityRejected": {
+      "status": 403,
+      "body": {
+        "success": false,
+        "error": "Identity token is missing, expired, or not for this user",
+        "code": "invalid_web_tracking_identity"
+      },
+      "sdkBehavior": "Ask identityTokenProvider for a fresh token once and retry; if that fails, keep events queued and stop sending until identify() is called again"
+    },
+    "eventsPartiallyRejected": {
+      "status": 202,
+      "body": {
+        "success": true,
+        "accepted": 1,
+        "rejected": [
+          {
+            "index": 0,
+            "eventId": "evt-1",
+            "error": "\"saas.purchase\" is a built-in event name and can only be sent by Sequenzy or your backend"
+          }
+        ]
+      },
+      "sdkBehavior": "Remove every event in the batch from the queue; log rejected ones"
+    },
+    "retryable": {
+      "statuses": [408, 425, 429, 500, 502, 503, 504],
+      "sdkBehavior": "Keep the batch queued and retry with exponential backoff (1s doubling to 5 minutes); network errors are retryable too"
+    },
+    "permanent": {
+      "statuses": [400, 401, 404, 413],
+      "sdkBehavior": "Drop the batch; log the error"
+    }
+  },
+  "geofences": {
+    "nearbyResponse": {
+      "success": true,
+      "geofences": [
+        {
+          "id": "geo_1",
+          "latitude": 51.5136,
+          "longitude": -0.1365,
+          "radiusMeters": 200
+        },
+        {
+          "id": "geo_2",
+          "latitude": 51.5308,
+          "longitude": -0.1238,
+          "radiusMeters": 350
+        }
+      ],
+      "refreshRadiusMeters": 4200
+    },
+    "refreshRegionId": "sequenzy.refresh",
+    "sdkBehavior": "Fetch with limit = maxRegions - 1 and the position rounded to 2 decimals. Register the returned geofences plus a refresh region (id sequenzy.refresh) centered on the precise device position with refreshRadiusMeters; when refreshRadiusMeters is null register no refresh region. Leaving the refresh region fetches again (at most once a minute). Report enter/exit of real geofences as type geofence events; drop a repeat of the same transition for the same geofence within 60 seconds. Never report the refresh region."
+  }
+}

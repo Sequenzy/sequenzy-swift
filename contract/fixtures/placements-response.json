@@ -1,0 +1,64 @@
+{
+  "success": true,
+  "placements": [
+    {
+      "placement": "home_hero",
+      "message": {
+        "id": "iam_placement",
+        "kind": "placement",
+        "format": null,
+        "position": null,
+        "eyebrow": "Members only",
+        "title": "Upgrade to Pro, Jane",
+        "body": "Get 20% off your first year.",
+        "imageUrl": "https://cdn.example.com/pro.png",
+        "imagePlacement": null,
+        "buttons": [
+          {
+            "label": "See plans",
+            "action": "open_url",
+            "url": "myapp://billing"
+          },
+          {
+            "label": "Not now",
+            "action": "dismiss",
+            "url": null
+          }
+        ],
+        "data": {
+          "campaign": "pro"
+        },
+        "style": {
+          "preset": "brand",
+          "backgroundColor": "#ffffff",
+          "textColor": "#111827",
+          "mutedTextColor": "#4b5563",
+          "buttonColor": "#4f46e5",
+          "buttonTextColor": "#ffffff",
+          "cornerRadius": 16,
+          "buttonRadius": 8,
+          "fontFamily": "Inter, Arial, sans-serif"
+        },
+        "pinned": false,
+        "placement": "home_hero",
+        "priority": "high",
+        "layout": "card",
+        "sequenceId": "seq_1",
+        "stepId": "step_2",
+        "createdAt": "2026-11-07T10:00:00.000Z",
+        "expiresAt": null,
+        "displayedAt": null,
+        "clickedAt": null,
+        "clickCount": 0,
+        "dismissedAt": null,
+        "readAt": null,
+        "html": null,
+        "showCloseButton": false
+      }
+    },
+    {
+      "placement": "checkout_upsell",
+      "message": null
+    }
+  ]
+}

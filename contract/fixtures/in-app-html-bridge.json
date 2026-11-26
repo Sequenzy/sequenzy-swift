@@ -1,0 +1,238 @@
+{
+  "description": "Messages the Sequenzy JS bridge posts from a custom HTML in-app message (protocol v1). Every SDK parses `valid` to `expected` and rejects every `invalid` entry; `urls` lists links a message may and may not open.",
+  "maxMessageBytes": 32768,
+  "maxCallsPerDisplay": 50,
+  "valid": [
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "close",
+        "args": {}
+      },
+      "expected": {
+        "method": "close"
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "close"
+      },
+      "expected": {
+        "method": "close"
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "openUrl",
+        "args": {
+          "url": "https://example.com/a?x=1",
+          "external": true,
+          "buttonId": "0"
+        }
+      },
+      "expected": {
+        "method": "openUrl",
+        "url": "https://example.com/a?x=1",
+        "external": true,
+        "buttonId": "0"
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "openUrl",
+        "args": {
+          "url": "myapp://orders/1"
+        }
+      },
+      "expected": {
+        "method": "openUrl",
+        "url": "myapp://orders/1",
+        "external": false
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "logClick",
+        "args": {
+          "buttonId": "answer 1"
+        }
+      },
+      "expected": {
+        "method": "logClick",
+        "buttonId": "answer 1"
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "logClick",
+        "args": {
+          "buttonId": "<bad>"
+        }
+      },
+      "expected": {
+        "method": "logClick"
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "logClick",
+        "args": {}
+      },
+      "expected": {
+        "method": "logClick"
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "track",
+        "args": {
+          "name": "survey_answered",
+          "properties": {
+            "score": 9,
+            "tags": ["a"],
+            "nested": {
+              "ok": true
+            }
+          }
+        }
+      },
+      "expected": {
+        "method": "track",
+        "name": "survey_answered",
+        "properties": {
+          "score": 9,
+          "tags": ["a"],
+          "nested": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "track",
+        "args": {
+          "name": "no_props"
+        }
+      },
+      "expected": {
+        "method": "track",
+        "name": "no_props",
+        "properties": {}
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "setAttributes",
+        "args": {
+          "attributes": {
+            "nps_score": 9,
+            "plan": "pro",
+            "cleared": null
+          }
+        }
+      },
+      "expected": {
+        "method": "setAttributes",
+        "attributes": {
+          "nps_score": 9,
+          "plan": "pro",
+          "cleared": null
+        }
+      }
+    },
+    {
+      "input": {
+        "__sequenzyInApp": 1,
+        "method": "setName",
+        "args": {
+          "firstName": "Jane"
+        }
+      },
+      "expected": {
+        "method": "setName",
+        "firstName": "Jane"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "method": "close"
+    },
+    {
+      "__sequenzyInApp": 2,
+      "method": "close"
+    },
+    {
+      "__sequenzyInApp": 1,
+      "method": "eval",
+      "args": {
+        "code": "x"
+      }
+    },
+    {
+      "__sequenzyInApp": 1,
+      "method": "openUrl",
+      "args": {}
+    },
+    {
+      "__sequenzyInApp": 1,
+      "method": "openUrl",
+      "args": {
+        "url": ""
+      }
+    },
+    {
+      "__sequenzyInApp": 1,
+      "method": "track",
+      "args": {
+        "name": ""
+      }
+    },
+    {
+      "__sequenzyInApp": 1,
+      "method": "track",
+      "args": {
+        "name": 5
+      }
+    },
+    {
+      "__sequenzyInApp": 1,
+      "method": "setAttributes",
+      "args": {
+        "attributes": [1]
+      }
+    },
+    {
+      "__sequenzyInApp": 1,
+      "method": "setName",
+      "args": {}
+    },
+    "not an object"
+  ],
+  "urls": {
+    "allowed": ["https://example.com/upgrade", "myapp://orders/1", "mailto:help@example.com", "tel:+15550100"],
+    "blocked": [
+      "javascript:alert(1)",
+      " JavaScript:alert(1)",
+      "data:text/html,hi",
+      "vbscript:x",
+      "file:///etc/passwd",
+      "http://example.com",
+      "blob:https://x/1",
+      "about:blank",
+      "/relative",
+      "",
+      "1http://x"
+    ]
+  }
+}
